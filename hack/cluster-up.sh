@@ -23,12 +23,17 @@ metadata:
 spec:
   certificateRotateStrategy: {}
   configuration:
+    network:
+      defaultNetworkInterface: masquerade
     vmRolloutStrategy: LiveUpdate
     developerConfiguration:
-      featureGates: []
+      featureGates:
+      - ExpandDisks
   customizeComponents: {}
   imagePullPolicy: IfNotPresent
-  workloadUpdateStrategy: {}
+  workloadUpdateStrategy:
+    workloadUpdateMethods:
+    - LiveMigrate
 EOF
 # wait until all KubeVirt components are up
 _kubectl -n kubevirt wait kv kubevirt --for condition=Available --timeout 15m
