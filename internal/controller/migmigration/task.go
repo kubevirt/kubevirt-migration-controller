@@ -2,7 +2,6 @@ package migmigration
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -100,15 +99,11 @@ func (t *Task) Run(ctx context.Context) error {
 		return err
 	}
 
-	// Log "[RUN] <Phase Description>" unless we are waiting on
-	// DIM or DVM (they will log their own [RUN]) with the same message.
-	t.logRunHeader()
-
 	defer t.updatePipeline()
 
 	// Run the current phase.
 	switch t.Phase {
-	case Created, Started, Rollback:
+	case Created, Started:
 		if err = t.next(); err != nil {
 			return err
 		}
@@ -122,11 +117,11 @@ func (t *Task) Run(ctx context.Context) error {
 		if err = t.next(); err != nil {
 			return err
 		}
-	case EnsureStagePodsTerminated, WaitForStaleStagePodsTerminated, QuiesceSourceApplications, EnsureSrcQuiesced, CleanStaleStagePods:
+	case QuiesceSourceVM, EnsureSrcQuiesced:
 		if err = t.next(); err != nil {
 			return err
 		}
-	case CreateDirectVolumeMigrationStage, CreateDirectVolumeMigrationFinal:
+	case CreateDirectVolumeMigration:
 		if t.hasDirectVolumes() {
 			err := t.createDirectVolumeMigration(nil)
 			if err != nil {
@@ -136,7 +131,7 @@ func (t *Task) Run(ctx context.Context) error {
 		if err := t.next(); err != nil {
 			return err
 		}
-	case WaitForDirectVolumeMigrationToComplete, WaitForDirectVolumeMigrationRollbackToComplete:
+	case WaitForDirectVolumeMigrationToComplete:
 		// dvm, err := t.getDirectVolumeMigration()
 		// if err != nil {
 		// 	return err
@@ -203,12 +198,8 @@ func (t *Task) init() error {
 		t.Itinerary = FailedItinerary
 	} else if t.canceled() {
 		t.Itinerary = CancelItinerary
-	} else if t.rollback() {
-		t.Itinerary = RollbackItinerary
-	} else if t.stage() || t.migrateState() {
-		t.Itinerary = StageItinerary
 	} else {
-		t.Itinerary = FinalItinerary
+		t.Itinerary = ExecuteItinerary
 	}
 	if t.Owner.Status.Itinerary != t.Itinerary.Name {
 		t.Phase = t.Itinerary.Phases[0].Name
@@ -362,7 +353,7 @@ func (t *Task) allFlags(phase Phase) (bool, error) {
 	if phase.all&HasPVs != 0 && !anyPVs {
 		return false, nil
 	}
-	if phase.all&HasStagePods != 0 && !t.Owner.Status.HasCondition(StagePodsCreated) {
+	if phase.all&HasStagePods != 0 {
 		return false, nil
 	}
 	if phase.all&Quiesce != 0 && !t.quiesce() {
@@ -396,7 +387,7 @@ func (t *Task) anyFlags(phase Phase) (bool, error) {
 	if phase.anyf&HasPVs != 0 && anyPVs {
 		return true, nil
 	}
-	if phase.anyf&HasStagePods != 0 && t.Owner.Status.HasCondition(StagePodsCreated) {
+	if phase.anyf&HasStagePods != 0 {
 		return true, nil
 	}
 	if phase.anyf&Quiesce != 0 && t.quiesce() {
@@ -638,18 +629,6 @@ func (t *Task) getPhaseDescription(phaseName string) string {
 	return phaseName
 }
 
-// Log the "[RUN] <Phase description>" phase kickoff string unless
-// DVM or DIM is already logging a duplicate phase description.
-// This is meant to cut down on log noise when two controllers
-// are waiting on the same thing.
-func (t *Task) logRunHeader() {
-	if t.Phase != WaitForDirectVolumeMigrationToComplete &&
-		t.Phase != WaitForDirectImageMigrationToComplete {
-		_, n, total := t.Itinerary.progressReport(t.Phase)
-		t.Log.Info(fmt.Sprintf("[RUN] (Step %v/%v) %v", n, total, t.getPhaseDescription(t.Phase)))
-	}
-}
-
 func (t *Task) waitForDVMToComplete(dvm *migrationsv1alpha1.DirectVolumeMigration) error {
 	// Check if DVM is complete and report progress
 	if time.Since(t.Owner.CreationTimestamp.Time) > 2*time.Minute {
@@ -661,11 +640,4 @@ func (t *Task) waitForDVMToComplete(dvm *migrationsv1alpha1.DirectVolumeMigratio
 		t.Requeue = PollReQ
 	}
 	return nil
-}
-
-// Get both source and destination clients with associated namespaces.
-func (t *Task) getBothNamespaces() ([][]string, error) {
-	namespaceList := [][]string{t.sourceNamespaces(), t.destinationNamespaces()}
-
-	return namespaceList, nil
 }

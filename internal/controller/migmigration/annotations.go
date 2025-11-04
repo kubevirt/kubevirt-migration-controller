@@ -12,17 +12,17 @@ import (
 
 // Delete temporary annotations and labels added.
 func (t *Task) deleteAnnotations() error {
-	nsLists, err := t.getBothNamespaces()
-	if err != nil {
-		return err
-	}
+	// nsLists, err := t.getBothNamespaces()
+	// if err != nil {
+	// 	return err
+	// }
 
-	for _, ns := range nsLists {
-		err = t.deletePVCAnnotations(t.Client, ns)
-		if err != nil {
-			return err
-		}
-	}
+	// for _, ns := range nsLists {
+	// 	err = t.deletePVCAnnotations(t.Client, ns)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// }
 
 	return nil
 }
