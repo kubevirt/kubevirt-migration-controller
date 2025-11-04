@@ -50,13 +50,21 @@ endif
 # This is useful for CI or a project to utilize a specific version of the operator-sdk toolkit.
 OPERATOR_SDK_VERSION ?= v1.40.0
 # Image URL to use all building/pushing image targets
-IMG ?= controller:latest
+IMG ?= kubevirt-migration-controller:latest
+
+DOCKER_REPO ?= localhost
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
 GOBIN=$(shell go env GOPATH)/bin
 else
 GOBIN=$(shell go env GOBIN)
+endif
+
+KUBECTL_PATH ?= kubectl
+ifneq ($(or $(filter undefined,$(origin DOCKER_REPO)),$(filter localhost,$(DOCKER_REPO))),)
+$(info Using kubevirtci kubectl)
+KUBECTL_PATH = $(PWD)/cluster-up/kubectl.sh
 endif
 
 # CONTAINER_TOOL defines the container tool to be used for building images.
@@ -118,7 +126,7 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 # - CERT_MANAGER_INSTALL_SKIP=true
 .PHONY: test-e2e
 test-e2e: manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	go test ./test/e2e/ -v -ginkgo.v
+	go test ./test/e2e/ -v -ginkgo.v --kubectl-path=$(KUBECTL_PATH)
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -147,11 +155,11 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} .
+	$(CONTAINER_TOOL) build -t ${DOCKER_REPO_IMAGE} .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
-	$(CONTAINER_TOOL) push ${IMG}
+	$(CONTAINER_TOOL) push ${DOCKER_PUSH_FLAGS} ${DOCKER_REPO_IMAGE}
 
 # PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
 # architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
@@ -192,7 +200,8 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	@echo "Deploying controller to the K8s cluster specified in ~/.kube/config. MANIFEST_IMG: ${MANIFEST_IMG}"
+	cd config/manager && $(KUSTOMIZE) edit set image controller=${MANIFEST_IMG}
 	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
@@ -347,7 +356,7 @@ cluster-up: ## Start a kubevirtci cluster. set KUBEVIRT_PROVIDER environment var
 
 .PHONY: cluster-sync
 cluster-sync: ## Build the controller/importer/cloner, and push it into a running cluster. The cluster must be up before running a cluster sync. Also generates a manifest and applies it to the running cluster after pushing the images to it.
-	./cluster-sync/sync.sh
+	DOCKER_REPO=$(DOCKER_REPO) IMG=$(IMG) ./cluster-sync/sync.sh
 
 .PHONY: cluster-down
 cluster-down: ## Stop the cluster, doing a make cluster-down && make cluster-up will basically restart the cluster into an empty fresh state.

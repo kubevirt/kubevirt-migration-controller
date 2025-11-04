@@ -23,7 +23,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -136,7 +135,7 @@ func (r *MigMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// }
 
 	// Default to PollReQ, can be overridden by r.postpone() or r.migrate()
-	requeueAfter := time.Duration(PollReQ)
+	requeueAfter := PollReQ
 
 	// Ensure that migrations run serially ordered by when created
 	// and grouped with stage migrations followed by final migrations.

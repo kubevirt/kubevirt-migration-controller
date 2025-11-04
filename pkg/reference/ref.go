@@ -23,5 +23,5 @@ func RefEquals(refA, refB *corev1.ObjectReference) bool {
 func ToKind(resource interface{}) string {
 	t := reflect.TypeOf(resource).String()
 	p := strings.SplitN(t, ".", 2)
-	return string(p[len(p)-1])
+	return p[len(p)-1]
 }

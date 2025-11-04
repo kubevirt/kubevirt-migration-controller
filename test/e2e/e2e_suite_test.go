@@ -17,9 +17,9 @@ limitations under the License.
 package e2e
 
 import (
+	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -39,7 +39,9 @@ var (
 
 	// projectImage is the name of the image which will be build and loaded
 	// with the code source changes to be tested.
-	projectImage = "registry:5000/kubevirt-migrations-controller:latest"
+	// projectImage = "registry:5000/kubevirt-migrations-controller:latest"
+
+	kubectlPath = flag.String("kubectl-path", "kubectl", "Path to the kubectl binary")
 )
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
@@ -53,10 +55,10 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	By("building the manager(Operator) image")
-	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
-	_, err := utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
+	// By("building the manager(Operator) image")
+	// cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
+	// _, err := utils.Run(cmd)
+	// ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
 
 	// TODO(user): If you want to change the e2e test vendor from Kind, ensure the image is
 	// built and available before running the tests. Also, remove the following block.
@@ -70,10 +72,10 @@ var _ = BeforeSuite(func() {
 	// Setup CertManager before the suite if not skipped and if not already installed
 	if !skipCertManagerInstall {
 		By("checking if cert manager is installed already")
-		isCertManagerAlreadyInstalled = utils.IsCertManagerCRDsInstalled()
+		isCertManagerAlreadyInstalled = utils.IsCertManagerCRDsInstalled(kubectlPath)
 		if !isCertManagerAlreadyInstalled {
 			_, _ = fmt.Fprintf(GinkgoWriter, "Installing CertManager...\n")
-			Expect(utils.InstallCertManager()).To(Succeed(), "Failed to install CertManager")
+			Expect(utils.InstallCertManager(kubectlPath)).To(Succeed(), "Failed to install CertManager")
 		} else {
 			_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: CertManager is already installed. Skipping installation...\n")
 		}
@@ -84,6 +86,6 @@ var _ = AfterSuite(func() {
 	// Teardown CertManager after the suite if not skipped and if it was not already installed
 	if !skipCertManagerInstall && !isCertManagerAlreadyInstalled {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Uninstalling CertManager...\n")
-		utils.UninstallCertManager()
+		utils.UninstallCertManager(kubectlPath)
 	}
 })

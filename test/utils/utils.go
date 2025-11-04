@@ -61,17 +61,17 @@ func Run(cmd *exec.Cmd) (string, error) {
 }
 
 // InstallPrometheusOperator installs the prometheus Operator to be used to export the enabled metrics.
-func InstallPrometheusOperator() error {
+func InstallPrometheusOperator(kubectlPath *string) error {
 	url := fmt.Sprintf(prometheusOperatorURL, prometheusOperatorVersion)
-	cmd := exec.Command("kubectl", "create", "-f", url)
+	cmd := exec.Command(*kubectlPath, "create", "-f", url)
 	_, err := Run(cmd)
 	return err
 }
 
 // UninstallPrometheusOperator uninstalls the prometheus
-func UninstallPrometheusOperator() {
+func UninstallPrometheusOperator(kubectlPath *string) {
 	url := fmt.Sprintf(prometheusOperatorURL, prometheusOperatorVersion)
-	cmd := exec.Command("kubectl", "delete", "-f", url)
+	cmd := exec.Command(*kubectlPath, "delete", "-f", url)
 	if _, err := Run(cmd); err != nil {
 		warnError(err)
 	}
@@ -79,7 +79,7 @@ func UninstallPrometheusOperator() {
 
 // IsPrometheusCRDsInstalled checks if any Prometheus CRDs are installed
 // by verifying the existence of key CRDs related to Prometheus.
-func IsPrometheusCRDsInstalled() bool {
+func IsPrometheusCRDsInstalled(kubectlPath *string) bool {
 	// List of common Prometheus CRDs
 	prometheusCRDs := []string{
 		"prometheuses.monitoring.coreos.com",
@@ -87,7 +87,7 @@ func IsPrometheusCRDsInstalled() bool {
 		"prometheusagents.monitoring.coreos.com",
 	}
 
-	cmd := exec.Command("kubectl", "get", "crds", "-o", "custom-columns=NAME:.metadata.name")
+	cmd := exec.Command(*kubectlPath, "get", "crds", "-o", "custom-columns=NAME:.metadata.name")
 	output, err := Run(cmd)
 	if err != nil {
 		return false
@@ -105,24 +105,24 @@ func IsPrometheusCRDsInstalled() bool {
 }
 
 // UninstallCertManager uninstalls the cert manager
-func UninstallCertManager() {
+func UninstallCertManager(kubectlPath *string) {
 	url := fmt.Sprintf(certmanagerURLTmpl, certmanagerVersion)
-	cmd := exec.Command("kubectl", "delete", "-f", url)
+	cmd := exec.Command(*kubectlPath, "delete", "-f", url)
 	if _, err := Run(cmd); err != nil {
 		warnError(err)
 	}
 }
 
 // InstallCertManager installs the cert manager bundle.
-func InstallCertManager() error {
+func InstallCertManager(kubectlPath *string) error {
 	url := fmt.Sprintf(certmanagerURLTmpl, certmanagerVersion)
-	cmd := exec.Command("kubectl", "apply", "-f", url)
+	cmd := exec.Command(*kubectlPath, "apply", "-f", url)
 	if _, err := Run(cmd); err != nil {
 		return err
 	}
 	// Wait for cert-manager-webhook to be ready, which can take time if cert-manager
 	// was re-installed after uninstalling on a cluster.
-	cmd = exec.Command("kubectl", "wait", "deployment.apps/cert-manager-webhook",
+	cmd = exec.Command(*kubectlPath, "wait", "deployment.apps/cert-manager-webhook",
 		"--for", "condition=Available",
 		"--namespace", "cert-manager",
 		"--timeout", "5m",
@@ -134,7 +134,7 @@ func InstallCertManager() error {
 
 // IsCertManagerCRDsInstalled checks if any Cert Manager CRDs are installed
 // by verifying the existence of key CRDs related to Cert Manager.
-func IsCertManagerCRDsInstalled() bool {
+func IsCertManagerCRDsInstalled(kubectlPath *string) bool {
 	// List of common Cert Manager CRDs
 	certManagerCRDs := []string{
 		"certificates.cert-manager.io",
@@ -146,7 +146,7 @@ func IsCertManagerCRDsInstalled() bool {
 	}
 
 	// Execute the kubectl command to get all CRDs
-	cmd := exec.Command("kubectl", "get", "crds")
+	cmd := exec.Command(*kubectlPath, "get", "crds")
 	output, err := Run(cmd)
 	if err != nil {
 		return false

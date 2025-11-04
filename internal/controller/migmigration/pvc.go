@@ -86,8 +86,8 @@ func (t *Task) handleSourceLabels(client k8sclient.Client, mapping pvcNameMappin
 				labels = make(map[string]string)
 			}
 			if mapping.ExistsAsValue(pvc.Name) {
-				//Skip target PVCs if they are in the same namespace, ensure the label was not copied
-				//from the source PVC
+				// Skip target PVCs if they are in the same namespace, ensure the label was not copied
+				// from the source PVC
 				delete(labels, "migration.openshift.io/source-for-directvolumemigration")
 			} else {
 				// Migration completed successfully, mark PVCs as migrated.
