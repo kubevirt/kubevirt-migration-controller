@@ -6,15 +6,14 @@ import (
 
 	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/rest"
 	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	migrationsv1alpha1 "kubevirt.io/kubevirt-migration-controller/api/v1alpha1"
 )
 
 // Requeue
-var FastReQ = time.Duration(time.Millisecond * 100)
-var PollReQ = time.Duration(time.Second * 3)
+var FastReQ = time.Millisecond * 100
+var PollReQ = time.Second * 3
 var NoReQ = time.Duration(0)
 
 // Flags
@@ -53,9 +52,7 @@ func (r Itinerary) progressReport(phaseName string) (string, int, int) {
 // Resources referenced by the plan.
 // Contains all of the fetched referenced resources.
 type PlanResources struct {
-	MigPlan        *migrationsv1alpha1.MigPlan
-	SrcMigCluster  *migrationsv1alpha1.MigCluster
-	DestMigCluster *migrationsv1alpha1.MigCluster
+	MigPlan *migrationsv1alpha1.MigPlan
 }
 
 // A task that provides the complete migration workflow.
@@ -108,12 +105,12 @@ func (t *Task) Run(ctx context.Context) error {
 			return err
 		}
 	case EnsureAnnotationsDeleted, CleanStaleAnnotations:
-		if !t.keepAnnotations() {
-			err := t.deleteAnnotations()
-			if err != nil {
-				return err
-			}
-		}
+		// if !t.keepAnnotations() {
+		// err := t.deleteAnnotations()
+		// if err != nil {
+		// 	return err
+		// }
+		// }
 		if err = t.next(); err != nil {
 			return err
 		}
@@ -222,20 +219,6 @@ func (t *Task) initPipeline(prevItinerary string) error {
 			if currentStep != nil {
 				continue
 			}
-			allFlags, err := t.allFlags(phase)
-			if err != nil {
-				return err
-			}
-			if !allFlags {
-				continue
-			}
-			anyFlags, err := t.anyFlags(phase)
-			if err != nil {
-				return err
-			}
-			if !anyFlags {
-				continue
-			}
 			t.Owner.Status.AddStep(&migrationsv1alpha1.Step{
 				Name:    phase.Step,
 				Message: "Not started",
@@ -289,17 +272,16 @@ func (t *Task) updatePipeline() {
 	t.Owner.Status.ReflectPipeline()
 }
 
-func (t *Task) setProgress(progress []string) {
-	currentStep := t.Owner.Status.FindStep(t.Step)
-	if currentStep != nil {
-		currentStep.Progress = progress
-	}
-}
+// func (t *Task) setProgress(progress []string) {
+// 	currentStep := t.Owner.Status.FindStep(t.Step)
+// 	if currentStep != nil {
+// 		currentStep.Progress = progress
+// 	}
+// }
 
 // Advance the task to the next phase.
 func (t *Task) next() error {
 	// Write time taken to complete phase
-	t.Owner.Status.StageCondition(migrationsv1alpha1.Running)
 	cond := t.Owner.Status.FindCondition(migrationsv1alpha1.Running)
 	if cond != nil {
 		elapsed := time.Since(cond.LastTransitionTime.Time)
@@ -319,97 +301,15 @@ func (t *Task) next() error {
 		t.Step = StepCleanup
 		return nil
 	}
-	for n := current + 1; n < len(t.Itinerary.Phases); n++ {
-		next := t.Itinerary.Phases[n]
-		flag, err := t.allFlags(next)
-		if err != nil {
-			return err
-		}
-		if !flag {
-			t.Log.Info("Skipped phase due to flag evaluation.",
-				"skippedPhase", next.Name)
-			continue
-		}
-		flag, err = t.anyFlags(next)
-		if err != nil {
-			return err
-		}
-		if !flag {
-			t.Log.V(3).Info("Skipped phase due to any flag evaluation.")
-			continue
-		}
-		t.Phase = next.Name
-		t.Step = next.Step
-		return nil
-	}
+	// for n := current + 1; n < len(t.Itinerary.Phases); n++ {
+	// 	next := t.Itinerary.Phases[n]
+	// 	t.Phase = next.Name
+	// 	t.Step = next.Step
+	// 	return nil
+	// }
 	t.Phase = Completed
 	t.Step = StepCleanup
 	return nil
-}
-
-// Evaluate `all` flags.
-func (t *Task) allFlags(phase Phase) (bool, error) {
-	anyPVs := t.hasPVs()
-	if phase.all&HasPVs != 0 && !anyPVs {
-		return false, nil
-	}
-	if phase.all&HasStagePods != 0 {
-		return false, nil
-	}
-	if phase.all&Quiesce != 0 && !t.quiesce() {
-		return false, nil
-	}
-	if phase.all&StorageConversion != 0 {
-		isStorageConversion, err := t.isStorageConversionMigration()
-		if err != nil {
-			return false, err
-		}
-		if !isStorageConversion {
-			return false, nil
-		}
-	}
-	if phase.all&HasVerify != 0 && !t.hasVerify() {
-		return false, nil
-	}
-	if phase.all&LiveVmMigration != 0 && !t.liveVolumeMigration() {
-		return false, nil
-	}
-	if phase.all&DirectVolume != 0 && !t.directVolumeMigration() {
-		return false, nil
-	}
-
-	return true, nil
-}
-
-// Evaluate `any` flags.
-func (t *Task) anyFlags(phase Phase) (bool, error) {
-	anyPVs := t.hasPVs()
-	if phase.anyf&HasPVs != 0 && anyPVs {
-		return true, nil
-	}
-	if phase.anyf&HasStagePods != 0 {
-		return true, nil
-	}
-	if phase.anyf&Quiesce != 0 && t.quiesce() {
-		return true, nil
-	}
-	if phase.anyf&StorageConversion != 0 {
-		isStorageConversion, err := t.isStorageConversionMigration()
-		if err != nil {
-			return false, err
-		}
-		if isStorageConversion {
-			return true, nil
-		}
-	}
-	if phase.anyf&HasVerify != 0 && t.hasVerify() {
-		return true, nil
-	}
-	if phase.anyf&DirectVolume != 0 && t.directVolumeMigration() {
-		return true, nil
-	}
-
-	return phase.anyf == uint32(0), nil
 }
 
 // Phase fail.
@@ -460,114 +360,94 @@ func (t *Task) canceled() bool {
 }
 
 // Get whether the migration is rollback.
-func (t *Task) rollback() bool {
-	return t.Owner.Spec.Rollback
-}
+// func (t *Task) rollback() bool {
+// 	return t.Owner.Spec.Rollback
+// }
 
 // Get whether the migration is stage.
-func (t *Task) stage() bool {
-	return t.Owner.Spec.Stage
-}
+// func (t *Task) stage() bool {
+// 	return t.Owner.Spec.Stage
+// }
 
 // Get whether the migration is state transfer
-func (t *Task) migrateState() bool {
-	return t.Owner.Spec.MigrateState
-}
-
-// Get the migration namespaces with mapping.
-func (t *Task) namespaces() []string {
-	return t.PlanResources.MigPlan.Spec.Namespaces
-}
-
-// Get the migration source namespaces without mapping.
-func (t *Task) sourceNamespaces() []string {
-	return t.PlanResources.MigPlan.GetSourceNamespaces()
-}
-
-// Get the migration source namespaces without mapping.
-func (t *Task) destinationNamespaces() []string {
-	return t.PlanResources.MigPlan.GetDestinationNamespaces()
-}
-
-// Get whether to quiesce pods.
-func (t *Task) quiesce() bool {
-	return t.Owner.Spec.QuiescePods
-}
+// func (t *Task) migrateState() bool {
+// 	return t.Owner.Spec.MigrateState
+// }
 
 // isStorageConversionMigration tells whether the migratoin is for storage conversion
-func (t *Task) isStorageConversionMigration() (bool, error) {
-	if t.migrateState() || t.rollback() {
-		for srcNs, destNs := range t.PlanResources.MigPlan.GetNamespaceMapping() {
-			if srcNs != destNs {
-				return false, nil
-			}
-		}
-		return true, nil
-	}
-	return false, nil
-}
+// func (t *Task) isStorageConversionMigration() (bool, error) {
+// 	if t.migrateState() || t.rollback() {
+// 		// for srcNs, destNs := range t.PlanResources.MigPlan.GetNamespaceMapping() {
+// 		// 	if srcNs != destNs {
+// 		// 		return false, nil
+// 		// 	}
+// 		// }
+// 		return true, nil
+// 	}
+// 	return false, nil
+// }
 
 // Get whether to retain annotations
-func (t *Task) keepAnnotations() bool {
-	return t.Owner.Spec.KeepAnnotations
-}
+// func (t *Task) keepAnnotations() bool {
+// 	return t.Owner.Spec.KeepAnnotations
+// }
 
 // Get a client for the source cluster.
-func (t *Task) getSourceRestConfig() (*rest.Config, error) {
-	// return t.PlanResources.SrcMigCluster.BuildRestConfig(t.Client)
-	return nil, nil
-}
+// func (t *Task) getSourceRestConfig() (*rest.Config, error) {
+// 	// return t.PlanResources.SrcMigCluster.BuildRestConfig(t.Client)
+// 	return nil, nil
+// }
 
 // Get a client for the source cluster.
-func (t *Task) getDestinationRestConfig() (*rest.Config, error) {
-	// return t.PlanResources.DestMigCluster.BuildRestConfig(t.Client)
-	return nil, nil
-}
+// func (t *Task) getDestinationRestConfig() (*rest.Config, error) {
+// 	// return t.PlanResources.DestMigCluster.BuildRestConfig(t.Client)
+// 	return nil, nil
+// }
 
 // Get the persistent volumes included in the plan which are included in the
 // stage backup/restore process
 // This function will only return PVs that are being copied via restic or
 // snapshot and any PVs selected for move.
-func (t *Task) getStagePVs() migrationsv1alpha1.PersistentVolumes {
-	directVolumesEnabled := true
-	volumes := []migrationsv1alpha1.PV{}
-	for _, pv := range t.PlanResources.MigPlan.Spec.PersistentVolumes.List {
-		// If the pv is skipped or if its a filesystem copy with DVM enabled then
-		// don't include it in a stage PV
-		if pv.Selection.Action == migrationsv1alpha1.PvSkipAction ||
-			(directVolumesEnabled && pv.Selection.Action == migrationsv1alpha1.PvCopyAction) {
-			continue
-		}
-		volumes = append(volumes, pv)
-	}
-	pvList := t.PlanResources.MigPlan.Spec.PersistentVolumes.DeepCopy()
-	pvList.List = volumes
-	return *pvList
-}
+// func (t *Task) getStagePVs() migrationsv1alpha1.PersistentVolumes {
+// 	directVolumesEnabled := true
+// 	volumes := []migrationsv1alpha1.PV{}
+// 	for _, pv := range t.PlanResources.MigPlan.Spec.PersistentVolumes.List {
+// 		// If the pv is skipped or if its a filesystem copy with DVM enabled then
+// 		// don't include it in a stage PV
+// 		if pv.Selection.Action == migrationsv1alpha1.PvSkipAction ||
+// 			(directVolumesEnabled && pv.Selection.Action == migrationsv1alpha1.PvCopyAction) {
+// 			continue
+// 		}
+// 		volumes = append(volumes, pv)
+// 	}
+// 	pvList := t.PlanResources.MigPlan.Spec.PersistentVolumes.DeepCopy()
+// 	pvList.List = volumes
+// 	return *pvList
+// }
 
 // Get the persistentVolumeClaims / action mapping included in the plan which are not skipped.
-func (t *Task) getPVCs() map[k8sclient.ObjectKey]migrationsv1alpha1.PV {
-	claims := map[k8sclient.ObjectKey]migrationsv1alpha1.PV{}
-	for _, pv := range t.getStagePVs().List {
-		claimKey := k8sclient.ObjectKey{
-			Name:      pv.PVC.GetSourceName(),
-			Namespace: pv.PVC.Namespace,
-		}
-		claims[claimKey] = pv
-	}
-	return claims
-}
+// func (t *Task) getPVCs() map[k8sclient.ObjectKey]migrationsv1alpha1.PV {
+// 	claims := map[k8sclient.ObjectKey]migrationsv1alpha1.PV{}
+// 	for _, pv := range t.getStagePVs().List {
+// 		claimKey := k8sclient.ObjectKey{
+// 			Name:      pv.PVC.GetSourceName(),
+// 			Namespace: pv.PVC.Namespace,
+// 		}
+// 		claims[claimKey] = pv
+// 	}
+// 	return claims
+// }
 
 // Get whether the associated plan lists not skipped PVs.
 // First return value is PVs overall, and second is limited to Move or snapshot copy PVs
-func (t *Task) hasPVs() bool {
-	for _, pv := range t.PlanResources.MigPlan.Spec.PersistentVolumes.List {
-		if pv.Selection.Action != migrationsv1alpha1.PvSkipAction {
-			return true
-		}
-	}
-	return false
-}
+// func (t *Task) hasPVs() bool {
+// 	for _, pv := range t.PlanResources.MigPlan.Spec.PersistentVolumes.List {
+// 		if pv.Selection.Action != migrationsv1alpha1.PvSkipAction {
+// 			return true
+// 		}
+// 	}
+// 	return false
+// }
 
 // Get whether the associated plan has PVs to be directly migrated
 func (t *Task) hasDirectVolumes() bool {
@@ -575,27 +455,20 @@ func (t *Task) hasDirectVolumes() bool {
 }
 
 // Get whether the verification is desired
-func (t *Task) hasVerify() bool {
-	return t.Owner.Spec.Verify
-}
+// func (t *Task) hasVerify() bool {
+// 	return t.Owner.Spec.Verify
+// }
 
 // Returns true if the IndirectVolumeMigration override on the plan is not set (plan is configured to do direct migration)
 // There must exist a set of direct volumes for this to return true
-func (t *Task) directVolumeMigration() bool {
-	return t.hasDirectVolumes()
-}
+// func (t *Task) directVolumeMigration() bool {
+// 	return t.hasDirectVolumes()
+// }
 
-func (t *Task) liveVolumeMigration() bool {
-	// For rollbacks on stopped VMs, we can just swap PVC references
-	return true
-}
-
-// Get both source and destination clusters.
-func (t *Task) getBothClusters() []*migrationsv1alpha1.MigCluster {
-	return []*migrationsv1alpha1.MigCluster{
-		t.PlanResources.SrcMigCluster,
-		t.PlanResources.DestMigCluster}
-}
+// func (t *Task) liveVolumeMigration() bool {
+// 	// For rollbacks on stopped VMs, we can just swap PVC references
+// 	return true
+// }
 
 // GetStepForPhase returns which high level step current phase belongs to
 func (r *Itinerary) GetStepForPhase(phaseName string) string {
@@ -611,25 +484,25 @@ func (r *Itinerary) GetStepForPhase(phaseName string) string {
 // user know an error was encountered with a description of the phase
 // where available. Stack trace will be printed shortly after this.
 // This is meant to help contextualize the stack trace for the user.
-func (t *Task) logErrorForPhase(phaseName string, err error) {
-	t.Log.Info("Exited Phase with error.",
-		"phase", phaseName,
-		"phaseDescription", t.getPhaseDescription(phaseName),
-		"error", err.Error())
-}
+// func (t *Task) logErrorForPhase(phaseName string, err error) {
+// 	t.Log.Info("Exited Phase with error.",
+// 		"phase", phaseName,
+// 		"phaseDescription", t.getPhaseDescription(phaseName),
+// 		"error", err.Error())
+// }
 
 // Get the extended phase description for a phase.
-func (t *Task) getPhaseDescription(phaseName string) string {
-	// Log the extended description of current phase
-	if phaseDescription, found := PhaseDescriptions[t.Phase]; found {
-		return phaseDescription
-	}
-	t.Log.Info("Missing phase description for phase: " + phaseName)
-	// If no description available, just return phase name.
-	return phaseName
-}
+// func (t *Task) getPhaseDescription(phaseName string) string {
+// 	// Log the extended description of current phase
+// 	if phaseDescription, found := PhaseDescriptions[t.Phase]; found {
+// 		return phaseDescription
+// 	}
+// 	t.Log.Info("Missing phase description for phase: " + phaseName)
+// 	// If no description available, just return phase name.
+// 	return phaseName
+// }
 
-func (t *Task) waitForDVMToComplete(dvm *migrationsv1alpha1.DirectVolumeMigration) error {
+func (t *Task) waitForDVMToComplete(_ *migrationsv1alpha1.DirectVolumeMigration) error {
 	// Check if DVM is complete and report progress
 	if time.Since(t.Owner.CreationTimestamp.Time) > 2*time.Minute {
 		// TODO: dummy wait to simulate dvm processing until the controller is ready

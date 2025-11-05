@@ -40,7 +40,6 @@ import (
 	virtv1 "kubevirt.io/api/core/v1"
 
 	migrationsv1alpha1 "kubevirt.io/kubevirt-migration-controller/api/v1alpha1"
-	"kubevirt.io/kubevirt-migration-controller/internal/controller"
 	"kubevirt.io/kubevirt-migration-controller/internal/controller/migmigration"
 	"kubevirt.io/kubevirt-migration-controller/internal/controller/migplan"
 	// +kubebuilder:scaffold:imports
@@ -207,13 +206,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controller.MigClusterReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "MigCluster")
-		os.Exit(1)
-	}
 	if err = (&migplan.MigPlanReconciler{
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),

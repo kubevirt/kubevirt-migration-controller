@@ -45,7 +45,6 @@ rules:
 - apiGroups:
   - migrations.kubevirt.io
   resources:
-  - migclusters
   - migmigrations
   - migplans
   verbs:
@@ -59,7 +58,6 @@ rules:
 - apiGroups:
   - migrations.kubevirt.io
   resources:
-  - migclusters/finalizers
   - migmigrations/finalizers
   - migplans/finalizers
   verbs:
@@ -67,7 +65,6 @@ rules:
 - apiGroups:
   - migrations.kubevirt.io
   resources:
-  - migclusters/status
   - migmigrations/status
   - migplans/status
   verbs:

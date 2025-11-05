@@ -50,8 +50,4 @@ type Phase struct {
 	Name string
 	// High level Step this phase belongs to
 	Step string
-	// Step included when ALL flags evaluate true.
-	all uint32
-	// Step included when ANY flag evaluates true.
-	anyf uint32
 }

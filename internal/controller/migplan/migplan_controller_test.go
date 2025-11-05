@@ -21,7 +21,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -237,16 +236,6 @@ func newMigPlan(name string) *migrationsv1alpha1.MigPlan {
 			Name:      name,
 			Namespace: "default",
 		},
-		Spec: migrationsv1alpha1.MigPlanSpec{
-			SrcMigClusterRef: &corev1.ObjectReference{
-				Name:      "migcluster-sample",
-				Namespace: "default",
-			},
-			DestMigClusterRef: &corev1.ObjectReference{
-				Name:      "migcluster-sample",
-				Namespace: "default",
-			},
-			Namespaces: []string{"default"},
-		},
+		Spec: migrationsv1alpha1.MigPlanSpec{},
 	}
 }

@@ -139,38 +139,7 @@ func (r *Condition) BuildItems() {
 //	!thing.Status.HasBlockerCondition(),
 //	"Resource Ready.")
 type Conditions struct {
-	List    []Condition `json:"conditions,omitempty"`
-	staging bool        `json:"-"`
-}
-
-// Begin staging conditions.
-func (r *Conditions) BeginStagingConditions() {
-	r.staging = true
-	if r.List == nil {
-		return
-	}
-	for index := range r.List {
-		condition := &r.List[index]
-		condition.BuildItems()
-		condition.staged = condition.Durable
-	}
-}
-
-// End staging conditions. Un-staged conditions are deleted.
-func (r *Conditions) EndStagingConditions() {
-	r.staging = false
-	if r.List == nil {
-		return
-	}
-	kept := []Condition{}
-	for index := range r.List {
-		condition := r.List[index]
-		if condition.staged {
-			condition.ExpandItems()
-			kept = append(kept, condition)
-		}
-	}
-	r.List = kept
+	List []Condition `json:"conditions,omitempty"`
 }
 
 // Find a condition by type.
@@ -195,9 +164,6 @@ func (r *Conditions) FindCondition(cndType string) *Condition {
 	}
 	condition := r.find(cndType)
 	if condition == nil {
-		return nil
-	}
-	if r.staging && !condition.staged {
 		return nil
 	}
 
@@ -232,23 +198,6 @@ func (r *Conditions) SetCondition(condition Condition) {
 	}
 }
 
-// Stage an existing condition by type.
-func (r *Conditions) StageCondition(types ...string) {
-	if r.List == nil {
-		return
-	}
-	filter := make(map[string]bool)
-	for _, t := range types {
-		filter[t] = true
-	}
-	for i := range r.List {
-		condition := &r.List[i]
-		if _, found := filter[condition.Type]; found {
-			condition.staged = true
-		}
-	}
-}
-
 // Delete conditions by type.
 func (r *Conditions) DeleteCondition(types ...string) {
 	if r.List == nil {
@@ -265,10 +214,6 @@ func (r *Conditions) DeleteCondition(types ...string) {
 		if !matched {
 			kept = append(kept, condition)
 			continue
-		}
-		if r.staging {
-			condition.staged = false
-			kept = append(kept, condition)
 		}
 	}
 	r.List = kept
@@ -317,9 +262,6 @@ func (r *Conditions) HasConditionCategory(names ...string) bool {
 	for _, condition := range r.List {
 		_, found := catSet[condition.Category]
 		if !found || condition.Status != True {
-			continue
-		}
-		if r.staging && !condition.staged {
 			continue
 		}
 		return true
@@ -384,7 +326,6 @@ func (r *Conditions) SetReconcileFailed(err error) {
 		Message:  "Reconcile failed: []. See controller logs for details.",
 		Items:    []string{err.Error()},
 	})
-	r.EndStagingConditions()
 }
 
 func (r *Conditions) RecordEvents(obj runtime.Object, recorder record.EventRecorder) {

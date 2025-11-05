@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"time"
 
-	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -46,7 +45,7 @@ func (r *MigMigrationReconciler) migrate(ctx context.Context, migration *migrati
 	}
 
 	// Resources
-	planResources, err := getReferencedResources(r.Client, plan)
+	planResources, err := getReferencedResources(plan)
 	if err != nil {
 		return 0, fmt.Errorf("failed to get plan resources: %w", err)
 	}
@@ -125,16 +124,12 @@ func (r *MigMigrationReconciler) migrate(ctx context.Context, migration *migrati
 	return task.Requeue, nil
 }
 
-func getReferencedResources(client k8sclient.Client, plan *migrationsv1alpha1.MigPlan) (*PlanResources, error) {
-	srcMigCluster, err := componenthelpers.GetSourceCluster(client, plan)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get source cluster: %w", err)
-	}
-	dstMigCluster := srcMigCluster
+func getReferencedResources(plan *migrationsv1alpha1.MigPlan) (*PlanResources, error) {
 	planResources := &PlanResources{
-		MigPlan:        plan,
-		SrcMigCluster:  srcMigCluster,
-		DestMigCluster: dstMigCluster,
+		MigPlan: plan,
+	}
+	if plan == nil {
+		return nil, fmt.Errorf("plan is nil")
 	}
 	return planResources, nil
 }

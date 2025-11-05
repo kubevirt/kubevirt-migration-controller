@@ -40,8 +40,6 @@ import (
 
 	migrationsv1alpha1 "kubevirt.io/kubevirt-migration-controller/api/v1alpha1"
 	componenthelpers "kubevirt.io/kubevirt-migration-controller/pkg/component-helpers"
-
-	"github.com/google/uuid"
 )
 
 // MigMigrationReconciler reconciles a MigMigration object
@@ -125,7 +123,7 @@ func (r *MigMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	// Begin staging conditions.
-	migration.Status.BeginStagingConditions()
+	// migration.Status.BeginStagingConditions()
 
 	// Validate
 	// err = r.validate(ctx, migration)
@@ -165,7 +163,7 @@ func (r *MigMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		"The migration is ready.")
 
 	// End staging conditions.
-	migration.Status.EndStagingConditions()
+	// migration.Status.EndStagingConditions()
 
 	// Apply changes.
 	markReconciled(migration)
@@ -299,11 +297,11 @@ func (r *MigMigrationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func markReconciled(migration *migrationsv1alpha1.MigMigration) {
-	uuid, _ := uuid.NewUUID()
+	// uuid, _ := uuid.NewUUID()
 	if migration.Annotations == nil {
 		migration.Annotations = map[string]string{}
 	}
-	migration.Annotations[migrationsv1alpha1.TouchAnnotation] = uuid.String()
+	// migration.Annotations[migrationsv1alpha1.TouchAnnotation] = uuid.String()
 	migration.Status.ObservedDigest = digest(migration.Spec)
 }
 

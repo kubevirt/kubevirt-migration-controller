@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	kapi "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/types"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	virtv1 "kubevirt.io/api/core/v1"
@@ -75,6 +75,8 @@ const (
 	KubeVirtNotInstalledSourceCluster          = "KubeVirtNotInstalledSourceCluster"
 	KubeVirtVersionNotSupported                = "KubeVirtVersionNotSupported"
 	KubeVirtStorageLiveMigrationNotEnabled     = "KubeVirtStorageLiveMigrationNotEnabled"
+	StorageMigrationNotPossible                = "StorageMigrationNotPossible"
+	StorageLiveMigratable                      = "StorageLiveMigratable"
 )
 
 // Categories
@@ -89,6 +91,7 @@ const (
 const (
 	NotSet                 = "NotSet"
 	NotFound               = "NotFound"
+	NotReady               = "NotReady"
 	KeyNotFound            = "KeyNotFound"
 	NotDistinct            = "NotDistinct"
 	LimitExceeded          = "LimitExceeded"
@@ -118,13 +121,6 @@ const (
 	False = migrationsv1alpha1.False
 )
 
-// OpenShift NS annotations
-const (
-	openShiftMCSAnnotation       = "openshift.io/sa.scc.mcs"
-	openShiftSuppGroupAnnotation = "openshift.io/sa.scc.supplemental-groups"
-	openShiftUIDRangeAnnotation  = "openshift.io/sa.scc.uid-range"
-)
-
 // Valid kubevirt feature gates
 const (
 	VolumesUpdateStrategy = "VolumesUpdateStrategy"
@@ -133,95 +129,8 @@ const (
 	storageProfile        = "auto"
 )
 
-// Valid AccessMode values
-var validAccessModes = []kapi.PersistentVolumeAccessMode{kapi.ReadWriteOnce, kapi.ReadOnlyMany, kapi.ReadWriteMany, storageProfile}
-
 // Validate the plan resource.
 func (r *MigPlanReconciler) validate(ctx context.Context, plan *migrationsv1alpha1.MigPlan) error {
-	// // Source cluster
-	// err := r.validateSourceCluster(ctx, plan)
-	// if err != nil {
-	// 	return liberr.Wrap(err)
-	// }
-
-	// // Destination cluster
-	// err = r.validateDestinationCluster(ctx, plan)
-	// if err != nil {
-	// 	return liberr.Wrap(err)
-	// }
-
-	// // validates possible migration options available for this plan
-	// err = r.validatePossibleMigrationTypes(ctx, plan)
-	// if err != nil {
-	// 	return liberr.Wrap(err)
-	// }
-
-	// // Storage
-	// err = r.validateStorage(ctx, plan)
-	// if err != nil {
-	// 	return liberr.Wrap(err)
-	// }
-
-	// // Migrated namespaces.
-	// err = r.validateNamespaces(ctx, plan)
-	// if err != nil {
-	// 	return liberr.Wrap(err)
-	// }
-
-	// // Validates pod properties (e.g. limit of number of active pods, presence of node-selectors)
-	// // within each namespace.
-	// err = r.validatePodProperties(ctx, plan)
-	// if err != nil {
-	// 	return liberr.Wrap(err)
-	// }
-
-	// // Required namespaces.
-	// err = r.validateRequiredNamespaces(ctx, plan)
-	// if err != nil {
-	// 	return liberr.Wrap(err)
-	// }
-
-	// Conflict
-	if err := r.validateConflict(ctx, plan); err != nil {
-		return fmt.Errorf("error validating conflict: %w", err)
-	}
-
-	// // Registry proxy secret
-	// err = r.validateRegistryProxySecrets(ctx, plan)
-	// if err != nil {
-	// 	return liberr.Wrap(err)
-	// }
-
-	// // Validate health of Pods
-	// err = r.validatePodHealth(ctx, plan)
-	// if err != nil {
-	// 	return liberr.Wrap(err)
-	// }
-
-	// // Hooks
-	// err = r.validateHooks(ctx, plan)
-	// if err != nil {
-	// 	return liberr.Wrap(err)
-	// }
-
-	// // Included Resources
-	// err = r.validateIncludedResources(ctx, plan)
-	// if err != nil {
-	// 	return liberr.Wrap(err)
-	// }
-
-	// // GVK
-	// err = r.compareGVK(ctx, plan)
-	// if err != nil {
-	// 	return liberr.Wrap(err)
-	// }
-
-	// // Versions
-	// err = r.validateOperatorVersions(ctx, plan)
-	// if err != nil {
-	// 	return liberr.Wrap(err)
-	// }
-
 	if err := r.validateLiveMigrationPossible(ctx, plan); err != nil {
 		return fmt.Errorf("err checking if live migration is possible: %w", err)
 	}
@@ -229,55 +138,52 @@ func (r *MigPlanReconciler) validate(ctx context.Context, plan *migrationsv1alph
 	return nil
 }
 
-// Validate the plan does not conflict with another plan.
-func (r *MigPlanReconciler) validateConflict(ctx context.Context, plan *migrationsv1alpha1.MigPlan) error {
-	planList := migrationsv1alpha1.MigPlanList{}
-	err := r.Client.List(ctx, &planList)
-	if err != nil {
-		return err
-	}
-	list := []string{}
-	for _, p := range planList.Items {
-		if plan.UID == p.UID {
-			continue
-		}
-		if plan.HasConflict(&p) {
-			list = append(list, p.Name)
-		}
-	}
-	if len(list) > 0 {
-		plan.Status.SetCondition(migrationsv1alpha1.Condition{
-			Type:     PlanConflict,
-			Status:   True,
-			Reason:   Conflict,
-			Category: Error,
-			Message:  "The migration plan is in conflict with [].",
-			Items:    list,
-		})
-	}
-
-	return nil
-}
-
 func (r *MigPlanReconciler) validateLiveMigrationPossible(ctx context.Context, plan *migrationsv1alpha1.MigPlan) error {
-	// Check if kubevirt is installed, if not installed, return nil
-	// srcCluster, err := plan.GetSourceCluster(r)
-	// if err != nil {
-	// 	return liberr.Wrap(err)
-	// }
-	// if err := r.validateCluster(ctx, srcCluster, plan); err != nil {
-	// 	return liberr.Wrap(err)
-	// }
-	// dstCluster, err := plan.GetDestinationCluster(r)
-	// if err != nil {
-	// 	return liberr.Wrap(err)
-	// }
-	// return r.validateCluster(ctx, dstCluster, plan)
-
 	if err := r.validateKubeVirtInstalled(ctx, plan); err != nil {
 		return err
 	}
+	if err := r.validateStorageMigrationPossible(ctx, plan); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (r *MigPlanReconciler) validateStorageMigrationPossible(ctx context.Context, plan *migrationsv1alpha1.MigPlan) error {
+	// Loop over the virtual machines in the plan and validate if the storage migration is possible.
+	for _, vm := range plan.Spec.VirtualMachines {
+		if reason, message, err := r.validateStorageMigrationPossibleForVM(ctx, &vm, plan.Namespace); err != nil {
+			return err
+		} else if message != "" {
+			plan.Status.SetCondition(migrationsv1alpha1.Condition{
+				Type:     StorageMigrationNotPossible,
+				Status:   True,
+				Reason:   reason,
+				Category: Critical,
+				Message:  message,
+			})
+			return nil
+		}
+	}
+	// Remove the storage migration not possible condition for the virtual machine.
+	plan.Status.DeleteCondition(StorageMigrationNotPossible)
+	return nil
+}
+
+func (r *MigPlanReconciler) validateStorageMigrationPossibleForVM(ctx context.Context, planVM *migrationsv1alpha1.MigPlanVirtualMachine, namespace string) (string, string, error) {
+	// Check the conditions for the virtual machine.
+	vm := virtv1.VirtualMachine{}
+	if err := r.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: planVM.Name}, &vm); err != nil {
+		return "", "", err
+	}
+	if !vm.Status.Ready {
+		return NotReady, "virtual machine is not ready", nil
+	}
+	for _, condition := range vm.Status.Conditions {
+		if condition.Type == StorageLiveMigratable && condition.Status == False {
+			return condition.Reason, condition.Message, nil
+		}
+	}
+	return "", "", nil
 }
 
 func (r *MigPlanReconciler) validateKubeVirtInstalled(ctx context.Context, plan *migrationsv1alpha1.MigPlan) error {
@@ -294,7 +200,7 @@ func (r *MigPlanReconciler) validateKubeVirtInstalled(ctx context.Context, plan 
 			Type:     KubeVirtNotInstalledSourceCluster,
 			Status:   True,
 			Reason:   NotFound,
-			Category: Advisory,
+			Category: Critical,
 			Message:  KubeVirtNotInstalledSourceClusterMessage,
 		})
 		return nil
@@ -307,7 +213,7 @@ func (r *MigPlanReconciler) validateKubeVirtInstalled(ctx context.Context, plan 
 			Type:     KubeVirtVersionNotSupported,
 			Status:   True,
 			Reason:   NotSupported,
-			Category: Warn,
+			Category: Critical,
 			Message:  KubeVirtVersionNotSupportedMessage,
 		})
 		return nil
@@ -319,7 +225,7 @@ func (r *MigPlanReconciler) validateKubeVirtInstalled(ctx context.Context, plan 
 			Type:     KubeVirtVersionNotSupported,
 			Status:   True,
 			Reason:   NotSupported,
-			Category: Warn,
+			Category: Critical,
 			Message:  KubeVirtVersionNotSupportedMessage,
 		})
 		return nil
@@ -333,7 +239,7 @@ func (r *MigPlanReconciler) validateKubeVirtInstalled(ctx context.Context, plan 
 			Type:     KubeVirtStorageLiveMigrationNotEnabled,
 			Status:   True,
 			Reason:   NotSupported,
-			Category: Warn,
+			Category: Critical,
 			Message:  KubeVirtStorageLiveMigrationNotEnabledMessage,
 		})
 		return nil
