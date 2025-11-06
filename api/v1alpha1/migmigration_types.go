@@ -21,71 +21,22 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Cache Indexes.
 const (
-	PlanIndexField = "MigPlanRef"
+	MigMigrationKind      = "MigMigration"
+	MigMigrationFinalizer = "migmigration.kubevirt.io/finalizer"
 )
-
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
 // MigMigrationSpec defines the desired state of MigMigration
 type MigMigrationSpec struct {
 	MigPlanRef *corev1.ObjectReference `json:"migPlanRef,omitempty"`
-
-	// Invokes the stage operation, when set to true the migration controller switches to stage itinerary. This is a required field.
-	Stage bool `json:"stage"`
-
-	// Invokes the state migration operation
-	MigrateState bool `json:"migrateState,omitempty"`
-
-	// Specifies whether to quiesce the application Pods before migrating Persistent Volume data.
-	QuiescePods bool `json:"quiescePods,omitempty"`
-
-	// Specifies whether to retain the annotations set by the migration controller or not.
-	KeepAnnotations bool `json:"keepAnnotations,omitempty"`
-
-	// Specifies whether to verify the health of the migrated pods or not.
-	Verify bool `json:"verify,omitempty"`
-
-	// Invokes the cancel migration operation, when set to true the migration controller switches to cancel itinerary. This field can be used on-demand to cancel the running migration.
-	Canceled bool `json:"canceled,omitempty"`
-
-	// Invokes the rollback migration operation, when set to true the migration controller switches to rollback itinerary. This field needs to be set prior to creation of a MigMigration.
-	Rollback bool `json:"rollback,omitempty"`
-
-	// If set True, run rsync operations with escalated privileged, takes precedence over setting RunAsUser and RunAsGroup
-	RunAsRoot *bool `json:"runAsRoot,omitempty"`
-
-	// If set, runs rsync operations with provided user id. This provided user id should be a valid one that falls within the range of allowed UID of user namespace
-	RunAsUser *int64 `json:"runAsUser,omitempty"`
-
-	// If set, runs rsync operations with provided group id. This provided user id should be a valid one that falls within the range of allowed GID of user namespace
-	RunAsGroup *int64 `json:"runAsGroup,omitempty"`
 }
 
 // MigMigrationStatus defines the observed state of MigMigration
 type MigMigrationStatus struct {
-	Conditions         `json:",inline"`
-	UnhealthyResources `json:",inline"`
-	ObservedDigest     string       `json:"observedDigest,omitempty"`
-	StartTimestamp     *metav1.Time `json:"startTimestamp,omitempty"`
-	Phase              string       `json:"phase,omitempty"`
-	Pipeline           []*Step      `json:"pipeline,omitempty"`
-	Itinerary          string       `json:"itinerary,omitempty"`
-	Errors             []string     `json:"errors,omitempty"`
-}
-
-// Step defines a task in a step of migration
-type Step struct {
-	Timed `json:",inline"`
-
-	Name     string   `json:"name"`
-	Phase    string   `json:"phase,omitempty"`
-	Message  string   `json:"message,omitempty"`
-	Progress []string `json:"progress,omitempty"`
-	Failed   bool     `json:"failed,omitempty"`
-	Skipped  bool     `json:"skipped,omitempty"`
+	Conditions `json:",inline"`
+	Phase      string   `json:"phase,omitempty"`
+	Itinerary  string   `json:"itinerary,omitempty"`
+	Errors     []string `json:"errors,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -95,9 +46,6 @@ type Step struct {
 // +k8s:openapi-gen=true
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Plan",type=string,JSONPath=".spec.migPlanRef.name"
-// +kubebuilder:printcolumn:name="Stage",type=string,JSONPath=".spec.stage"
-// +kubebuilder:printcolumn:name="Rollback",type=string,JSONPath=".spec.rollback"
-// +kubebuilder:printcolumn:name="Itinerary",type=string,JSONPath=".status.itinerary"
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 type MigMigration struct {
@@ -121,43 +69,6 @@ func init() {
 	SchemeBuilder.Register(&MigMigration{}, &MigMigrationList{})
 }
 
-// FindStep find step by name
-func (s *MigMigrationStatus) FindStep(stepName string) *Step {
-	for _, step := range s.Pipeline {
-		if step.Name == stepName {
-			return step
-		}
-	}
-	return nil
-}
-
-// AddStep adds a new step to the pipeline
-func (s *MigMigrationStatus) AddStep(step *Step) {
-	found := s.FindStep(step.Name)
-	if found == nil {
-		s.Pipeline = append(
-			s.Pipeline,
-			step,
-		)
-	}
-}
-
-// ReflectPipeline reflects pipeline
-func (s *MigMigrationStatus) ReflectPipeline() {
-	for _, step := range s.Pipeline {
-		if step.MarkedCompleted() {
-			step.Phase = ""
-			step.Message = "Completed"
-		}
-		if step.Failed {
-			step.Message = "Failed"
-		}
-		if step.Skipped {
-			step.Message = "Skipped"
-		}
-	}
-}
-
 // Add (de-duplicated) errors.
 func (r *MigMigration) AddErrors(errors []string) {
 	m := map[string]bool{}
@@ -177,23 +88,27 @@ func (r *MigMigration) HasErrors() bool {
 	return len(r.Status.Errors) > 0
 }
 
-// TODO: remove when real dvm introduced
-type DirectVolumeMigration struct{}
-type DirectVolumeMigrationType string
+// FindOwnerReference finds the owner reference of the migration
+func (r *MigMigration) FindOwnerReference() *metav1.OwnerReference {
+	for _, ownerReference := range r.OwnerReferences {
+		if ownerReference.Kind == MigPlanKind && ownerReference.APIVersion == GroupVersion.Version {
+			return &ownerReference
+		}
+	}
+	return nil
+}
 
-type PVCToMigrate struct {
-	*corev1.ObjectReference `json:",inline"`
-	// TargetStorageClass storage class of the migrated PVC in the target cluster
-	TargetStorageClass string `json:"targetStorageClass"`
-	// TargetAccessModes access modes of the migrated PVC in the target cluster
-	TargetAccessModes []corev1.PersistentVolumeAccessMode `json:"targetAccessModes"`
-	// TargetVolumeMode volume mode of the migrated PVC in the target cluster
-	TargetVolumeMode *corev1.PersistentVolumeMode `json:"targetVolumeMode,omitempty"`
-	// TargetNamespace namespace of the migrated PVC in the target cluster
-	TargetNamespace string `json:"targetNamespace,omitempty"`
-	// TargetName name of the migrated PVC in the target cluster
-	// +kubebuilder:validation:Optional
-	TargetName string `json:"targetName,omitempty"`
-	// Verify set true to verify integrity of the data post migration
-	Verify bool `json:"verify,omitempty"`
+// SetFinalizer adds the passed in finalizer to the migration
+func (r *MigMigration) AddFinalizer(finalizer string) {
+	r.Finalizers = append(r.Finalizers, finalizer)
+}
+
+// RemoveFinalizer removes the passed in finalizer from the migration
+func (r *MigMigration) RemoveFinalizer(finalizer string) {
+	for i, f := range r.Finalizers {
+		if f == finalizer {
+			r.Finalizers = append(r.Finalizers[:i], r.Finalizers[i+1:]...)
+			break
+		}
+	}
 }

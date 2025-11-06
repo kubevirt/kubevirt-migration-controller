@@ -18,9 +18,6 @@ package migmigration
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"reflect"
 
@@ -33,7 +30,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
@@ -66,138 +62,64 @@ type MigMigrationReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.4/pkg/reconcile
 func (r *MigMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-
 	// Fetch the MigMigration instance
 	migration := &migrationsv1alpha1.MigMigration{}
-	err := r.Get(context.TODO(), req.NamespacedName, migration)
-	if err != nil {
+
+	if err := r.Get(context.TODO(), req.NamespacedName, migration); err != nil {
 		if errors.IsNotFound(err) {
-			err = r.deleted()
-			if err != nil {
-				log.Error(err, "Failed to delete HasFinalMigration condition")
-			}
 			return reconcile.Result{}, nil
 		}
-		log.Error(err, "Failed to get MigMigration")
 		return reconcile.Result{}, err
 	}
+
+	origMigration := migration.DeepCopy()
 
 	// Ensure required labels are present on migmigration
-	err = r.ensureLabels(migration)
-	if err != nil {
-		log.Error(err, "Error setting debug labels")
-		return reconcile.Result{}, err
-	}
-
-	// Report reconcile error.
-	defer func() {
-		// Only log critical conditions.
-		critConditions := migration.Status.Conditions.FindConditionByCategory(migrationsv1alpha1.Critical)
-		if len(critConditions) > 0 {
-			log.Info("CR", "critical_conditions", critConditions)
-		}
-		migration.Status.Conditions.RecordEvents(migration, r.EventRecorder)
-		// TODO: original controller was forgiving conflict errors, should we do the same?
-		if err == nil {
-			return
-		}
-		migration.Status.SetReconcileFailed(err)
-		err := r.Status().Update(context.TODO(), migration)
-		if err != nil {
-			log.Error(err, "Failed to update MigMigration status on error")
-			return
-		}
-	}()
+	r.ensureLabels(migration)
 
 	// Completed.
-	if migration.Status.Phase == Completed {
+	if migration.Status.Phase == string(Completed) {
 		return reconcile.Result{}, nil
 	}
 
-	// Owner Reference
-	err = r.setOwnerReference(migration)
+	plan, err := componenthelpers.GetPlan(ctx, r.Client, migration.Spec.MigPlanRef)
 	if err != nil {
-		log.Error(err, "Failed to set owner references, requeuing")
 		return reconcile.Result{}, err
 	}
 
-	// Begin staging conditions.
-	// migration.Status.BeginStagingConditions()
+	// Owner Reference
+	if err := r.setOwnerReference(ctx, plan, migration); err != nil {
+		return reconcile.Result{}, err
+	}
 
 	// Validate
-	// err = r.validate(ctx, migration)
-	// if err != nil {
-	// 	log.V(3).Info("Validation failed %w", err)
-	// 	return reconcile.Result{}, err
-	// }
+	if err := r.validate(ctx, plan, migration); err != nil {
+		return reconcile.Result{}, err
+	}
 
-	// Default to PollReQ, can be overridden by r.postpone() or r.migrate()
-	requeueAfter := PollReQ
-
-	// Ensure that migrations run serially ordered by when created
-	// and grouped with stage migrations followed by final migrations.
-	// Reconcile of a migration not in the desired order will be postponed.
-	// if !migration.Status.HasBlockerCondition() {
-	// 	requeueAfter, err = r.postpone(migration)
-	// 	if err != nil {
-	// 		log.Info("Failed to check if postpone required, requeueing")
-	// 		sink.Trace(err)
-	// 		return reconcile.Result{Requeue: true}, err
-	// 	}
-	// }
+	requeueAfter := NoReQ
 
 	// Migrate
 	if !migration.Status.HasBlockerCondition() {
-		requeueAfter, err = r.migrate(ctx, migration)
+		var err error
+		requeueAfter, err = r.migrate(ctx, plan, migration)
 		if err != nil {
-			log.Error(err, "Failed to migrate")
 			return reconcile.Result{}, err
 		}
 	}
 
-	// Ready
-	migration.Status.SetReady(
-		migration.Status.Phase != Completed &&
-			!migration.Status.HasBlockerCondition(),
-		"The migration is ready.")
-
-	// End staging conditions.
-	// migration.Status.EndStagingConditions()
-
 	// Apply changes.
-	markReconciled(migration)
-	statusCopy := migration.Status.DeepCopy()
-	// change this to patch so we're sure the only spec we fill in is persistent volumes
-	err = r.Update(context.TODO(), migration)
-	if err != nil {
-		log.Error(err, "Failed to update MigMigration spec")
-		return reconcile.Result{}, err
+	if !reflect.DeepEqual(migration, origMigration) {
+		if err := r.Update(context.TODO(), migration); err != nil {
+			return reconcile.Result{}, err
+		}
 	}
 
-	if statusCopy != nil {
-		migration.Status = *statusCopy
-	}
-	err = r.Status().Update(context.TODO(), migration)
-	if err != nil {
-		log.Error(err, "Failed to update MigMigration status")
-		return reconcile.Result{}, err
-	}
-
-	// Requeue
-	if requeueAfter > 0 {
-		return reconcile.Result{RequeueAfter: requeueAfter}, nil
-	}
-
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
 // Set the owner reference is set to the plan.
-func (r *MigMigrationReconciler) setOwnerReference(migration *migrationsv1alpha1.MigMigration) error {
-	plan, err := componenthelpers.GetPlan(r.Client, migration.Spec.MigPlanRef)
-	if err != nil {
-		return fmt.Errorf("error in getting plan: %w", err)
-	}
+func (r *MigMigrationReconciler) setOwnerReference(ctx context.Context, plan *migrationsv1alpha1.MigPlan, migration *migrationsv1alpha1.MigMigration) error {
 	if plan == nil {
 		return nil
 	}
@@ -223,7 +145,7 @@ func (r *MigMigrationReconciler) setOwnerReference(migration *migrationsv1alpha1
 }
 
 // Ensures that required labels and debug labels are present on migmigration
-func (r *MigMigrationReconciler) ensureLabels(migration *migrationsv1alpha1.MigMigration) error {
+func (r *MigMigrationReconciler) ensureLabels(migration *migrationsv1alpha1.MigMigration) {
 	if migration.Labels == nil {
 		migration.Labels = make(map[string]string)
 	}
@@ -233,19 +155,15 @@ func (r *MigMigrationReconciler) ensureLabels(migration *migrationsv1alpha1.MigM
 
 	// Debug labels
 	if migration.Spec.MigPlanRef == nil {
-		return nil
+		return
 	}
 	if value, exists := migration.Labels[migrationsv1alpha1.MigPlanDebugLabel]; exists {
 		if value == migration.Spec.MigPlanRef.Name {
-			return nil
+			return
 		}
 	}
 	migration.Labels[migrationsv1alpha1.MigPlanDebugLabel] = migration.Spec.MigPlanRef.Name
-	err := r.Update(context.TODO(), migration)
-	if err != nil {
-		return fmt.Errorf("error in updating debug migration labels: %w", err)
-	}
-	return nil
+	return
 }
 
 // Migration has been deleted.
@@ -257,7 +175,7 @@ func (r *MigMigrationReconciler) deleted() error {
 		return err
 	}
 	for _, m := range migrationList.Items {
-		if m.Status.Phase == Completed || !m.Status.HasCondition(HasFinalMigration) {
+		if m.Status.Phase == string(Completed) || !m.Status.HasCondition(HasFinalMigration) {
 			continue
 		}
 		m.Status.DeleteCondition(HasFinalMigration)
@@ -294,22 +212,4 @@ func (r *MigMigrationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	return nil
-}
-
-func markReconciled(migration *migrationsv1alpha1.MigMigration) {
-	// uuid, _ := uuid.NewUUID()
-	if migration.Annotations == nil {
-		migration.Annotations = map[string]string{}
-	}
-	// migration.Annotations[migrationsv1alpha1.TouchAnnotation] = uuid.String()
-	migration.Status.ObservedDigest = digest(migration.Spec)
-}
-
-// Generate a sha256 hex-digest for an object.
-func digest(object interface{}) string {
-	j, _ := json.Marshal(object)
-	hash := sha256.New()
-	hash.Write(j)
-	digest := hex.EncodeToString(hash.Sum(nil))
-	return digest
 }

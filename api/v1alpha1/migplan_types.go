@@ -20,6 +20,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+const (
+	MigPlanKind = "MigPlan"
+)
+
 // MigPlanSpec defines the desired state of MigPlan
 type MigPlanSpec struct {
 	// The virtual machines to migrate.

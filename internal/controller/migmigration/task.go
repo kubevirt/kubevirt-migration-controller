@@ -12,26 +12,10 @@ import (
 )
 
 // Requeue
-var FastReQ = time.Millisecond * 100
-var PollReQ = time.Second * 3
-var NoReQ = time.Duration(0)
-
-// Flags
 const (
-	Quiesce           = 1 << iota // Only when QuiescePods (true).
-	HasStagePods                  // Only when stage pods created.
-	HasPVs                        // Only when PVs migrated.
-	HasVerify                     // Only when the plan has enabled verification
-	HasISs                        // Only when ISs migrated
-	DirectImage                   // Only when using direct image migration
-	IndirectImage                 // Only when using indirect image migration
-	DirectVolume                  // Only when using direct volume migration
-	IndirectVolume                // Only when using indirect volume migration
-	HasStageBackup                // True when stage backup is needed
-	EnableImage                   // True when disable_image_migration is unset
-	EnableVolume                  // True when disable_volume is unset
-	StorageConversion             // True when the migration is a storage conversion
-	LiveVmMigration               // True when the migration is a live vm migration
+	FastReQ = time.Millisecond * 100
+	PollReQ = time.Second * 3
+	NoReQ   = time.Duration(0)
 )
 
 // Get a progress report.
@@ -40,19 +24,13 @@ func (r Itinerary) progressReport(phaseName string) (string, int, int) {
 	n := 0
 	total := len(r.Phases)
 	for i, phase := range r.Phases {
-		if phase.Name == phaseName {
+		if string(phase) == phaseName {
 			n = i + 1
 			break
 		}
 	}
 
 	return phaseName, n, total
-}
-
-// Resources referenced by the plan.
-// Contains all of the fetched referenced resources.
-type PlanResources struct {
-	MigPlan *migrationsv1alpha1.MigPlan
 }
 
 // A task that provides the complete migration workflow.
@@ -67,17 +45,14 @@ type PlanResources struct {
 // Errors - Migration errors.
 // Failed - Task phase has failed.
 type Task struct {
-	Scheme        *runtime.Scheme
-	Log           logr.Logger
-	Client        k8sclient.Client
-	Owner         *migrationsv1alpha1.MigMigration
-	PlanResources *PlanResources
-	Annotations   map[string]string
-	Phase         string
-	Requeue       time.Duration
-	Itinerary     Itinerary
-	Errors        []string
-	Step          string
+	Scheme    *runtime.Scheme
+	Log       logr.Logger
+	Client    k8sclient.Client
+	Owner     *migrationsv1alpha1.MigMigration
+	Plan      *migrationsv1alpha1.MigPlan
+	Requeue   time.Duration
+	Itinerary *Itinerary
+	Errors    []string
 }
 
 // Run the task.
@@ -88,98 +63,83 @@ type Task struct {
 //  4. Return.
 func (t *Task) Run(ctx context.Context) error {
 	// Set stage, phase, phase description, migplan name
-	t.Log = t.Log.WithValues("phase", t.Phase)
+	t.Log = t.Log.WithValues("phase", t.Owner.Status.Phase)
 	t.Requeue = FastReQ
 
-	err := t.init()
-	if err != nil {
-		return err
-	}
-
-	defer t.updatePipeline()
+	t.init()
 
 	// Run the current phase.
-	switch t.Phase {
-	case Created, Started:
-		if err = t.next(); err != nil {
-			return err
-		}
-	case EnsureAnnotationsDeleted, CleanStaleAnnotations:
-		// if !t.keepAnnotations() {
-		// err := t.deleteAnnotations()
-		// if err != nil {
-		// 	return err
-		// }
-		// }
-		if err = t.next(); err != nil {
-			return err
-		}
-	case QuiesceSourceVM, EnsureSrcQuiesced:
-		if err = t.next(); err != nil {
-			return err
-		}
-	case CreateDirectVolumeMigration:
-		if t.hasDirectVolumes() {
-			err := t.createDirectVolumeMigration(nil)
-			if err != nil {
-				return err
-			}
-		}
-		if err := t.next(); err != nil {
-			return err
-		}
-	case WaitForDirectVolumeMigrationToComplete:
-		// dvm, err := t.getDirectVolumeMigration()
-		// if err != nil {
-		// 	return err
-		// }
-		// // if no dvm, continue to next task
-		// if dvm == nil {
-		// 	if err = t.next(); err != nil {
+	switch Phase(t.Owner.Status.Phase) {
+	case Started:
+		// Set finalizer on migration
+		t.Owner.AddFinalizer(migrationsv1alpha1.MigMigrationFinalizer)
+		t.Owner.Status.Phase = string(BeginLiveMigration)
+	case BeginLiveMigration:
+		// if t.hasDirectVolumes() {
+		// 	err := t.createDirectVolumeMigration(nil)
+		// 	if err != nil {
 		// 		return err
 		// 	}
-		// 	break
 		// }
-		if err := t.waitForDVMToComplete(nil); err != nil {
-			return err
-		}
-	case SwapPVCReferences:
-		t.Log.Info("Swapping PVC references")
-		reasons, err := t.swapPVCReferences(ctx)
-		if err != nil {
-			return err
-		}
-		if len(reasons) > 0 {
-			t.Log.Info("PVC references NOTTTT swapped successfully")
-			t.fail(MigrationFailed, reasons)
-		} else {
-			t.Log.Info("PVC references swapped successfully")
-			if err = t.next(); err != nil {
-				return err
-			}
-		}
+		// if err := t.next(); err != nil {
+		// 	return err
+		// }
+	// case WaitForLiveMigrationToComplete:
+	// if err := t.next(); err != nil {
+	// 	return err
+	// }
+	// case WaitForDirectVolumeMigrationToComplete:
+	// dvm, err := t.getDirectVolumeMigration()
+	// if err != nil {
+	// 	return err
+	// }
+	// // if no dvm, continue to next task
+	// if dvm == nil {
+	// 	if err = t.next(); err != nil {
+	// 		return err
+	// 	}
+	// 	break
+	// }
+	// if err := t.waitForDVMToComplete(nil); err != nil {
+	// 	return err
+	// }
+	// case SwapPVCReferences:
+	// 	t.Log.Info("Swapping PVC references")
+	// 	reasons, err := t.swapPVCReferences(ctx)
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	if len(reasons) > 0 {
+	// 		t.Log.Info("PVC references NOTTTT swapped successfully")
+	// 		t.fail(MigrationFailed, reasons)
+	// 	} else {
+	// 		t.Log.Info("PVC references swapped successfully")
+	// 		if err = t.next(); err != nil {
+	// 			return err
+	// 		}
+	// 	}
 	case Canceled:
-		t.Owner.Status.DeleteCondition(Canceling)
+		t.Owner.Status.DeleteCondition(string(Canceling))
 		t.Owner.Status.SetCondition(migrationsv1alpha1.Condition{
-			Type:     Canceled,
+			Type:     string(Canceled),
 			Status:   True,
 			Reason:   Cancel,
 			Category: Advisory,
 			Message:  "The migration has been canceled.",
 			Durable:  true,
 		})
-		if err = t.next(); err != nil {
-			return err
-		}
+		// if err = t.next(); err != nil {
+		// 	return err
+		// }
 	case Completed:
 	default:
 		t.Requeue = NoReQ
-		if err = t.next(); err != nil {
-			return err
-		}
+		// if err = t.next(); err != nil {
+		// 	return err
+		// }
 	}
 
-	if t.Phase == Completed {
+	if t.Owner.Status.Phase == string(Completed) {
 		t.Requeue = NoReQ
 		t.Log.Info("[COMPLETED]")
 	}
@@ -188,89 +148,52 @@ func (t *Task) Run(ctx context.Context) error {
 }
 
 // Initialize.
-func (t *Task) init() error {
+func (t *Task) init() {
 	t.Log.V(4).Info("Running task init")
 	t.Requeue = FastReQ
-	if t.failed() {
-		t.Itinerary = FailedItinerary
-	} else if t.canceled() {
-		t.Itinerary = CancelItinerary
+	if t.canceled() {
+		t.Itinerary = &CancelItinerary
 	} else {
-		t.Itinerary = ExecuteItinerary
-	}
-	if t.Owner.Status.Itinerary != t.Itinerary.Name {
-		t.Phase = t.Itinerary.Phases[0].Name
+		t.Itinerary = &ExecuteItinerary
 	}
 
-	t.Step = t.Itinerary.GetStepForPhase(t.Phase)
-
-	err := t.initPipeline(t.Owner.Status.Itinerary)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	t.Owner.Status.Itinerary = t.Itinerary.Name
+	t.Owner.Status.Phase = string(t.Itinerary.Phases[0])
 }
 
-func (t *Task) initPipeline(prevItinerary string) error {
-	if t.Itinerary.Name != prevItinerary {
-		for _, phase := range t.Itinerary.Phases {
-			currentStep := t.Owner.Status.FindStep(phase.Step)
-			if currentStep != nil {
-				continue
-			}
-			t.Owner.Status.AddStep(&migrationsv1alpha1.Step{
-				Name:    phase.Step,
-				Message: "Not started",
-			})
-		}
-	}
-	currentStep := t.Owner.Status.FindStep(t.Step)
-	if currentStep != nil {
-		currentStep.MarkStarted()
-		currentStep.Phase = t.Phase
-		if desc, found := PhaseDescriptions[t.Phase]; found {
-			currentStep.Message = desc
-		} else {
-			currentStep.Message = ""
-		}
-	}
-	return nil
-}
-
-func (t *Task) updatePipeline() {
-	t.Log.V(4).Info("Updating pipeline view of progress")
-	currentStep := t.Owner.Status.FindStep(t.Step)
-	for _, step := range t.Owner.Status.Pipeline {
-		if currentStep != step && step.MarkedStarted() {
-			step.MarkCompleted()
-		}
-	}
-	// mark steps skipped
-	for _, step := range t.Owner.Status.Pipeline {
-		if step == currentStep {
-			break
-		} else if !step.MarkedStarted() {
-			step.Skipped = true
-		}
-	}
-	if currentStep != nil {
-		currentStep.MarkStarted()
-		currentStep.Phase = t.Phase
-		if currentStep.Name == StepDirectVolume {
-			return
-		}
-		if desc, found := PhaseDescriptions[t.Phase]; found {
-			currentStep.Message = desc
-		} else {
-			currentStep.Message = ""
-		}
-		if t.Phase == Completed {
-			currentStep.MarkCompleted()
-		}
-	}
-	t.Owner.Status.ReflectPipeline()
-}
+// func (t *Task) updatePipeline() {
+// 	t.Log.V(4).Info("Updating pipeline view of progress")
+// 	currentStep := t.Owner.Status.FindStep(t.Step)
+// 	for _, step := range t.Owner.Status.Pipeline {
+// 		if currentStep != step && step.MarkedStarted() {
+// 			step.MarkCompleted()
+// 		}
+// 	}
+// 	// mark steps skipped
+// 	for _, step := range t.Owner.Status.Pipeline {
+// 		if step == currentStep {
+// 			break
+// 		} else if !step.MarkedStarted() {
+// 			step.Skipped = true
+// 		}
+// 	}
+// 	if currentStep != nil {
+// 		currentStep.MarkStarted()
+// 		currentStep.Phase = t.Phase
+// 		if currentStep.Name == StepDirectVolume {
+// 			return
+// 		}
+// 		if desc, found := PhaseDescriptions[t.Phase]; found {
+// 			currentStep.Message = desc
+// 		} else {
+// 			currentStep.Message = ""
+// 		}
+// 		if t.Phase == Completed {
+// 			currentStep.MarkCompleted()
+// 		}
+// 	}
+// 	t.Owner.Status.ReflectPipeline()
+// }
 
 // func (t *Task) setProgress(progress []string) {
 // 	currentStep := t.Owner.Status.FindStep(t.Step)
@@ -280,64 +203,61 @@ func (t *Task) updatePipeline() {
 // }
 
 // Advance the task to the next phase.
-func (t *Task) next() error {
-	// Write time taken to complete phase
-	cond := t.Owner.Status.FindCondition(migrationsv1alpha1.Running)
-	if cond != nil {
-		elapsed := time.Since(cond.LastTransitionTime.Time)
-		t.Log.Info("Phase completed", "phaseElapsed", elapsed)
-	}
+// func (t *Task) next() error {
+// 	// Write time taken to complete phase
+// 	cond := t.Owner.Status.FindCondition(migrationsv1alpha1.Running)
+// 	if cond != nil {
+// 		elapsed := time.Since(cond.LastTransitionTime.Time)
+// 		t.Log.Info("Phase completed", "phaseElapsed", elapsed)
+// 	}
 
-	current := -1
-	for i, phase := range t.Itinerary.Phases {
-		if phase.Name != t.Phase {
-			continue
-		}
-		current = i
-		break
-	}
-	if current == -1 {
-		t.Phase = Completed
-		t.Step = StepCleanup
-		return nil
-	}
-	// for n := current + 1; n < len(t.Itinerary.Phases); n++ {
-	// 	next := t.Itinerary.Phases[n]
-	// 	t.Phase = next.Name
-	// 	t.Step = next.Step
-	// 	return nil
-	// }
-	t.Phase = Completed
-	t.Step = StepCleanup
-	return nil
-}
+// 	current := -1
+// 	for i, phase := range t.Itinerary.Phases {
+// 		if phase != t.Phase {
+// 			continue
+// 		}
+// 		current = i
+// 		break
+// 	}
+// 	if current == -1 {
+// 		t.Phase = Completed
+// 		return nil
+// 	}
+// 	// for n := current + 1; n < len(t.Itinerary.Phases); n++ {
+// 	// 	next := t.Itinerary.Phases[n]
+// 	// 	t.Phase = next.Name
+// 	// 	t.Step = next.Step
+// 	// 	return nil
+// 	// }
+// 	t.Phase = Completed
+// 	return nil
+// }
 
 // Phase fail.
-func (t *Task) fail(nextPhase string, reasons []string) {
-	t.addErrors(reasons)
-	t.Owner.AddErrors(t.Errors)
-	t.Log.Info("Marking migration as FAILED. See Status.Errors",
-		"migrationErrors", t.Owner.Status.Errors)
-	t.Owner.Status.SetCondition(migrationsv1alpha1.Condition{
-		Type:     migrationsv1alpha1.Failed,
-		Status:   True,
-		Reason:   t.Phase,
-		Category: Advisory,
-		Message:  "The migration has failed.  See: Errors.",
-		Durable:  true,
-	})
-	t.failCurrentStep()
-	t.Phase = nextPhase
-	t.Step = StepCleanup
-}
+// func (t *Task) fail(nextPhase Phase, reasons []string) {
+// 	t.addErrors(reasons)
+// 	t.Owner.AddErrors(t.Errors)
+// 	t.Log.Info("Marking migration as FAILED. See Status.Errors",
+// 		"migrationErrors", t.Owner.Status.Errors)
+// 	t.Owner.Status.SetCondition(migrationsv1alpha1.Condition{
+// 		Type:     migrationsv1alpha1.Failed,
+// 		Status:   True,
+// 		Reason:   string(t.Phase),
+// 		Category: Advisory,
+// 		Message:  "The migration has failed.  See: Errors.",
+// 		Durable:  true,
+// 	})
+// 	// t.failCurrentStep()
+// 	t.Phase = nextPhase
+// }
 
 // Marks current step failed
-func (t *Task) failCurrentStep() {
-	currentStep := t.Owner.Status.FindStep(t.Step)
-	if currentStep != nil {
-		currentStep.Failed = true
-	}
-}
+// func (t *Task) failCurrentStep() {
+// 	currentStep := t.Owner.Status.FindStep(t.Step)
+// 	if currentStep != nil {
+// 		currentStep.Failed = true
+// 	}
+// }
 
 // Add errors.
 func (t *Task) addErrors(errors []string) {
@@ -356,7 +276,7 @@ func (t *Task) failed() bool {
 
 // Get whether the migration is cancelled.
 func (t *Task) canceled() bool {
-	return t.Owner.Spec.Canceled || t.Owner.Status.HasAnyCondition(Canceled, Canceling)
+	return t.Owner.Status.HasAnyCondition(string(Canceled), string(Canceling))
 }
 
 // Get whether the migration is rollback.
@@ -450,9 +370,9 @@ func (t *Task) canceled() bool {
 // }
 
 // Get whether the associated plan has PVs to be directly migrated
-func (t *Task) hasDirectVolumes() bool {
-	return t.getDirectVolumeClaimList() != nil
-}
+// func (t *Task) hasDirectVolumes() bool {
+// 	return t.getDirectVolumeClaimList() != nil
+// }
 
 // Get whether the verification is desired
 // func (t *Task) hasVerify() bool {
@@ -471,14 +391,13 @@ func (t *Task) hasDirectVolumes() bool {
 // }
 
 // GetStepForPhase returns which high level step current phase belongs to
-func (r *Itinerary) GetStepForPhase(phaseName string) string {
-	for _, phase := range r.Phases {
-		if phaseName == phase.Name {
-			return phase.Step
-		}
-	}
-	return ""
-}
+// func (r *Itinerary) GetStepForPhase(phaseName string) string {
+// 	for _, phase := range r.Phases {
+// 		if phaseName == string(phase) {
+// 		}
+// 	}
+// 	return ""
+// }
 
 // Emits an INFO level warning message (no stack trace) letting the
 // user know an error was encountered with a description of the phase
@@ -502,15 +421,15 @@ func (r *Itinerary) GetStepForPhase(phaseName string) string {
 // 	return phaseName
 // }
 
-func (t *Task) waitForDVMToComplete(_ *migrationsv1alpha1.DirectVolumeMigration) error {
-	// Check if DVM is complete and report progress
-	if time.Since(t.Owner.CreationTimestamp.Time) > 2*time.Minute {
-		// TODO: dummy wait to simulate dvm processing until the controller is ready
-		if err := t.next(); err != nil {
-			return err
-		}
-	} else {
-		t.Requeue = PollReQ
-	}
-	return nil
-}
+// func (t *Task) waitForDVMToComplete(_ *migrationsv1alpha1.DirectVolumeMigration) error {
+// 	// Check if DVM is complete and report progress
+// 	if time.Since(t.Owner.CreationTimestamp.Time) > 2*time.Minute {
+// 		// TODO: dummy wait to simulate dvm processing until the controller is ready
+// 		if err := t.next(); err != nil {
+// 			return err
+// 		}
+// 	} else {
+// 		t.Requeue = PollReQ
+// 	}
+// 	return nil
+// }
