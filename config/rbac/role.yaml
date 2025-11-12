@@ -42,6 +42,19 @@ rules:
   - get
   - list
   - watch
+  - patch
+- apiGroups:
+  - cdi.kubevirt.io
+  resources:
+  - datavolumes
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
 - apiGroups:
   - migrations.kubevirt.io
   resources:

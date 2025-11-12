@@ -19,18 +19,14 @@ const (
 	Succeeded       = "Succeeded"
 )
 
-// Status
-const (
-	True  = "True"
-	False = "False"
-)
-
 // Reasons
 const (
-	NotFound    = "NotFound"
-	NotSet      = "NotSet"
-	NotDistinct = "NotDistinct"
-	NotReady    = "NotReady"
+	NotFound     = "NotFound"
+	NotSet       = "NotSet"
+	NotSupported = "NotSupported"
+	NotDistinct  = "NotDistinct"
+	NotReady     = "NotReady"
+	Conflict     = "Conflict"
 )
 
 // Category
@@ -56,12 +52,12 @@ const (
 // Items - A list of `items` associated with the condition used to replace [] in `Message`.
 // staging - A condition has been explicitly set/updated.
 type Condition struct {
-	Type               string      `json:"type"`
-	Status             string      `json:"status"`
-	Reason             string      `json:"reason,omitempty"`
-	Category           string      `json:"category"`
-	Message            string      `json:"message,omitempty"`
-	LastTransitionTime metav1.Time `json:"lastTransitionTime"`
+	Type               string                 `json:"type"`
+	Status             corev1.ConditionStatus `json:"status"`
+	Reason             string                 `json:"reason,omitempty"`
+	Category           string                 `json:"category"`
+	Message            string                 `json:"message,omitempty"`
+	LastTransitionTime metav1.Time            `json:"lastTransitionTime"`
 }
 
 // Update this condition with another's fields.
@@ -192,7 +188,7 @@ func (r *Conditions) HasCondition(types ...string) bool {
 	}
 	for _, cndType := range types {
 		condition := r.FindCondition(cndType)
-		if condition == nil || condition.Status != True {
+		if condition == nil || condition.Status != corev1.ConditionTrue {
 			return false
 		}
 	}
@@ -207,7 +203,7 @@ func (r *Conditions) HasAnyCondition(types ...string) bool {
 	}
 	for _, cndType := range types {
 		condition := r.FindCondition(cndType)
-		if condition == nil || condition.Status != True {
+		if condition == nil || condition.Status != corev1.ConditionTrue {
 			continue
 		}
 		return true
@@ -227,7 +223,7 @@ func (r *Conditions) HasConditionCategory(names ...string) bool {
 	}
 	for _, condition := range r.List {
 		_, found := catSet[condition.Category]
-		if !found || condition.Status != True {
+		if !found || condition.Status != corev1.ConditionTrue {
 			continue
 		}
 		return true
@@ -262,7 +258,7 @@ func (r *Conditions) SetReady(ready bool, message string) {
 	if ready {
 		r.SetCondition(Condition{
 			Type:     Ready,
-			Status:   True,
+			Status:   corev1.ConditionTrue,
 			Category: Required,
 			Message:  message,
 		})
@@ -274,7 +270,7 @@ func (r *Conditions) SetReady(ready bool, message string) {
 // The collection contains the `Ready` condition.
 func (r *Conditions) IsReady() bool {
 	condition := r.FindCondition(Ready)
-	if condition == nil || condition.Status != True {
+	if condition == nil || condition.Status != corev1.ConditionTrue {
 		return false
 	}
 	return true
@@ -287,7 +283,7 @@ func (r *Conditions) SetReconcileFailed(err error) {
 	r.DeleteCondition(Ready)
 	r.SetCondition(Condition{
 		Type:     ReconcileFailed,
-		Status:   True,
+		Status:   corev1.ConditionTrue,
 		Category: Critical,
 		Message:  fmt.Sprintf("reconcile failed: %s", err.Error()),
 	})

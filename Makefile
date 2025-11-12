@@ -102,7 +102,13 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
+	# Generate CRDs from the API package
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./api/..." output:crd:artifacts:config=config/crd/bases
+	# Generate CRDs from the Kubevirt API package
+	$(CONTROLLER_GEN) crd:allowDangerousTypes=true paths="./vendor/kubevirt.io/api/core/v1/..." output:crd:artifacts:config=config/crd/bases
+	# Remove the datavolumetemplatespecs CRD because it is not needed
+	rm config/crd/bases/kubevirt.io_datavolumetemplatespecs.yaml
+	$(CONTROLLER_GEN) crd paths="./vendor/kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1/..." output:crd:artifacts:config=config/crd/bases
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.

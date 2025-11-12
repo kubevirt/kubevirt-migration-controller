@@ -14,11 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package migplan
+package storagemigplan
 
 import (
 	"context"
-	"reflect"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -26,6 +26,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/client-go/tools/record"
 
+	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	virtv1 "kubevirt.io/api/core/v1"
+	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -35,17 +39,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
-
-	virtv1 "kubevirt.io/api/core/v1"
-	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
 )
 
 const (
-	vmIndexKey = "spec.virtualMachines.name"
+	vmIndexKey                 = "spec.virtualMachines.name"
+	RefreshStartTimeAnnotation = "migration.kubevirt.io/refresh-start-time"
+	RefreshEndTimeAnnotation   = "migration.kubevirt.io/refresh-end-time"
 )
 
 // MigPlanReconciler reconciles a MigPlan object
-type MigPlanReconciler struct {
+type StorageMigPlanReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	record.EventRecorder
@@ -69,11 +72,11 @@ type MigPlanReconciler struct {
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.4/pkg/reconcile
-func (r *MigPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *StorageMigPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
-	log.V(5).Info("Reconciling MigPlan", "name", req.NamespacedName)
+	log.V(5).Info("Reconciling VirtualMachineStorageMigrationPlan", "name", req.NamespacedName)
 	// Fetch the MigPlan instance
-	plan := &migrations.MigPlan{}
+	plan := &migrations.VirtualMachineStorageMigrationPlan{}
 	err := r.Get(context.TODO(), req.NamespacedName, plan)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -92,27 +95,33 @@ func (r *MigPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// Validations.
 	if err := r.validate(ctx, plan); err != nil {
-		log.Error(err, "Failed to validate MigPlan")
+		log.Error(err, "Failed to validate VirtualMachineStorageMigrationPlan")
 		plan.Status.SetReconcileFailed(err)
 	}
 
 	if plan.Status.HasCriticalCondition() {
 		plan.Status.SetCondition(migrations.Condition{
 			Type:     migrations.Ready,
-			Status:   migrations.False,
+			Status:   corev1.ConditionFalse,
 			Category: migrations.Required,
 			Message:  "plan has one or more critical conditions",
 		})
 	} else {
 		plan.Status.SetCondition(migrations.Condition{
 			Type:     migrations.Ready,
-			Status:   migrations.True,
+			Status:   corev1.ConditionTrue,
 			Category: migrations.Required,
 			Message:  "plan is ready",
 		})
 	}
 
-	if !reflect.DeepEqual(plan.Status, planCopy.Status) {
+	if r.shouldUpdateRefresh(plan) {
+		r.setRefreshAnnotations(plan)
+		if err := r.Update(context.TODO(), plan); err != nil {
+			return reconcile.Result{}, err
+		}
+	}
+	if !apiequality.Semantic.DeepEqual(plan.Status, planCopy.Status) {
 		log.V(5).Info("Updating MigPlan status")
 		if err := r.Status().Update(context.TODO(), plan); err != nil {
 			return reconcile.Result{}, err
@@ -123,8 +132,25 @@ func (r *MigPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	return ctrl.Result{}, nil
 }
 
+func (r *StorageMigPlanReconciler) shouldUpdateRefresh(plan *migrations.VirtualMachineStorageMigrationPlan) bool {
+	if _, ok := plan.Annotations[RefreshStartTimeAnnotation]; !ok {
+		return false
+	}
+	if _, ok := plan.Annotations[RefreshEndTimeAnnotation]; !ok {
+		return true
+	}
+	return false
+}
+
+func (r *StorageMigPlanReconciler) setRefreshAnnotations(plan *migrations.VirtualMachineStorageMigrationPlan) {
+	if plan.Annotations == nil {
+		plan.Annotations = make(map[string]string)
+	}
+	plan.Annotations[RefreshEndTimeAnnotation] = time.Now().Format(time.RFC3339Nano)
+}
+
 // SetupWithManager sets up the controller with the Manager.
-func (r *MigPlanReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *StorageMigPlanReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Create a new controller
 	c, err := controller.New("kubevirt-migplan-controller", mgr, controller.Options{Reconciler: r})
 	if err != nil {
@@ -132,14 +158,14 @@ func (r *MigPlanReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	// Watch for changes to MigPlan
-	if err := c.Watch(source.Kind(mgr.GetCache(), &migrations.MigPlan{},
-		&handler.TypedEnqueueRequestForObject[*migrations.MigPlan]{},
-		predicate.TypedFuncs[*migrations.MigPlan]{
-			CreateFunc: func(e event.TypedCreateEvent[*migrations.MigPlan]) bool { return true },
-			DeleteFunc: func(e event.TypedDeleteEvent[*migrations.MigPlan]) bool { return true },
-			UpdateFunc: func(e event.TypedUpdateEvent[*migrations.MigPlan]) bool {
-				return !reflect.DeepEqual(e.ObjectOld.Spec, e.ObjectNew.Spec) ||
-					!reflect.DeepEqual(e.ObjectOld.DeletionTimestamp, e.ObjectNew.DeletionTimestamp)
+	if err := c.Watch(source.Kind(mgr.GetCache(), &migrations.VirtualMachineStorageMigrationPlan{},
+		&handler.TypedEnqueueRequestForObject[*migrations.VirtualMachineStorageMigrationPlan]{},
+		predicate.TypedFuncs[*migrations.VirtualMachineStorageMigrationPlan]{
+			CreateFunc: func(e event.TypedCreateEvent[*migrations.VirtualMachineStorageMigrationPlan]) bool { return true },
+			DeleteFunc: func(e event.TypedDeleteEvent[*migrations.VirtualMachineStorageMigrationPlan]) bool { return true },
+			UpdateFunc: func(e event.TypedUpdateEvent[*migrations.VirtualMachineStorageMigrationPlan]) bool {
+				return !apiequality.Semantic.DeepEqual(e.ObjectOld.Spec, e.ObjectNew.Spec) ||
+					!apiequality.Semantic.DeepEqual(e.ObjectOld.DeletionTimestamp, e.ObjectNew.DeletionTimestamp)
 			},
 		},
 	)); err != nil {
@@ -147,10 +173,10 @@ func (r *MigPlanReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	// Index the vmIndexKey field on MigPlans
-	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &migrations.MigPlan{}, vmIndexKey, func(rawObj client.Object) []string {
-		migplan := rawObj.(*migrations.MigPlan)
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &migrations.VirtualMachineStorageMigrationPlan{}, vmIndexKey, func(rawObj client.Object) []string {
+		vmStorageMigrationPlan := rawObj.(*migrations.VirtualMachineStorageMigrationPlan)
 		vmNames := []string{}
-		for _, vm := range migplan.Spec.VirtualMachines {
+		for _, vm := range vmStorageMigrationPlan.Spec.VirtualMachines {
 			vmNames = append(vmNames, vm.Name)
 		}
 		// The indexer stores an entry for each value in the returned slice
@@ -175,16 +201,15 @@ func (r *MigPlanReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return nil
 }
 
-func (r *MigPlanReconciler) getMigPlansForVM(ctx context.Context, vm *virtv1.VirtualMachine) []reconcile.Request {
+func (r *StorageMigPlanReconciler) getMigPlansForVM(ctx context.Context, vm *virtv1.VirtualMachine) []reconcile.Request {
 	log := logf.FromContext(ctx)
-	log.Info("Getting MigPlans for VM", "name", vm.Name)
-	migplans := &migrations.MigPlanList{}
+	vmStorageMigrationPlanList := &migrations.VirtualMachineStorageMigrationPlanList{}
 	requests := []reconcile.Request{}
-	if err := r.List(ctx, migplans, client.MatchingFields{vmIndexKey: vm.Name}); err != nil {
+	if err := r.List(ctx, vmStorageMigrationPlanList, client.MatchingFields{vmIndexKey: vm.Name}); err != nil {
+		log.Error(err, "Failed to list VirtualMachineStorageMigrationPlans for VM", "name", vm.Name)
 		return nil
 	}
-	for _, migplan := range migplans.Items {
-		log.Info("Adding MigPlan to requests", "name", migplan.Name)
+	for _, migplan := range vmStorageMigrationPlanList.Items {
 		requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: migplan.Name, Namespace: migplan.Namespace}})
 	}
 	return requests

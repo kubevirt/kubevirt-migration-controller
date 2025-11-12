@@ -4,14 +4,14 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.2
-  name: migmigrations.migrations.kubevirt.io
+  name: virtualmachinestoragemigrations.migrations.kubevirt.io
 spec:
   group: migrations.kubevirt.io
   names:
-    kind: MigMigration
-    listKind: MigMigrationList
-    plural: migmigrations
-    singular: migmigration
+    kind: VirtualMachineStorageMigration
+    listKind: VirtualMachineStorageMigrationList
+    plural: virtualmachinestoragemigrations
+    singular: virtualmachinestoragemigration
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
@@ -30,7 +30,8 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: MigMigration is the Schema for the migmigrations API
+        description: VirtualMachineStorageMigration is the Schema for the virtualmachinestoragemigrations
+          API
         properties:
           apiVersion:
             description: |-
@@ -52,7 +53,7 @@ spec:
           spec:
             description: MigMigrationSpec defines the desired state of MigMigration
             properties:
-              migPlanRef:
+              virtualMachineStorageMigrationPlanRef:
                 description: ObjectReference contains enough information to let you
                   inspect or modify the referred object.
                 properties:
@@ -96,10 +97,17 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+            required:
+            - virtualMachineStorageMigrationPlanRef
             type: object
           status:
-            description: MigMigrationStatus defines the observed state of MigMigration
+            description: VirtualMachineStorageMigrationStatus defines the observed
+              state of VirtualMachineStorageMigration
             properties:
+              completedMigrations:
+                items:
+                  type: string
+                type: array
               conditions:
                 items:
                   description: |-
@@ -136,10 +144,13 @@ spec:
                 items:
                   type: string
                 type: array
-              itinerary:
-                type: string
               phase:
+                description: Phase defines phase in the migration
                 type: string
+              runningMigrations:
+                items:
+                  type: string
+                type: array
             type: object
         type: object
     served: true

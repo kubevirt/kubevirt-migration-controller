@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package migplan
+package storagemig
 
 import (
 	"context"
@@ -32,12 +32,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	virtv1 "kubevirt.io/api/core/v1"
+	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
+	testutils "kubevirt.io/kubevirt-migration-controller/internal/controller/testutils"
 	// +kubebuilder:scaffold:imports
 )
 
-// These tests use Ginkgo (BDD-style Go testing framework). Refer to
-// http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
+const (
+	kvNamespace = "kubevirt"
+)
 
 var (
 	ctx       context.Context
@@ -57,12 +60,9 @@ var _ = BeforeSuite(func() {
 
 	ctx, cancel = context.WithCancel(context.TODO())
 
-	var err error
-	err = migrations.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
-	err = virtv1.AddToScheme(scheme.Scheme)
-	Expect(err).NotTo(HaveOccurred())
-
+	Expect(migrations.AddToScheme(scheme.Scheme)).NotTo(HaveOccurred())
+	Expect(virtv1.AddToScheme(scheme.Scheme)).NotTo(HaveOccurred())
+	Expect(cdiv1.AddToScheme(scheme.Scheme)).NotTo(HaveOccurred())
 	// +kubebuilder:scaffold:scheme
 
 	By("bootstrapping test environment")
@@ -76,21 +76,26 @@ var _ = BeforeSuite(func() {
 		testEnv.BinaryAssetsDirectory = dir
 	}
 
-	// cfg is defined in this file globally.
-	// cfg, err = testEnv.Start()
-	// Expect(err).NotTo(HaveOccurred())
-	// Expect(cfg).NotTo(BeNil())
+	cfg, err := testEnv.Start()
+	Expect(err).NotTo(HaveOccurred())
+	Expect(cfg).NotTo(BeNil())
 
-	// k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
-	// Expect(err).NotTo(HaveOccurred())
-	// Expect(k8sClient).NotTo(BeNil())
+	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
+	Expect(err).NotTo(HaveOccurred())
+	Expect(k8sClient).NotTo(BeNil())
+
+	testutils.CreateKubeVirtNamespace(ctx, k8sClient, kvNamespace)
+	testutils.CreateMigPlanNamespace(ctx, k8sClient, testutils.TestNamespace)
+
 })
 
 var _ = AfterSuite(func() {
 	By("tearing down the test environment")
+	testutils.DeleteKubeVirtNamespace(ctx, k8sClient, kvNamespace)
+	testutils.DeleteMigPlanNamespace(ctx, k8sClient, testutils.TestNamespace)
 	cancel()
-	// err := testEnv.Stop()
-	// Expect(err).NotTo(HaveOccurred())
+	err := testEnv.Stop()
+	Expect(err).NotTo(HaveOccurred())
 })
 
 // getFirstFoundEnvTestBinaryDir locates the first binary in the specified path.

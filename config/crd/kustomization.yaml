@@ -2,8 +2,23 @@
 # since it depends on service name and namespace that are out of this kustomize package.
 # It should be run by config/default
 resources:
-- bases/migrations.kubevirt.io_migplans.yaml
-- bases/migrations.kubevirt.io_migmigrations.yaml
+- bases/migrations.kubevirt.io_virtualmachinestoragemigrationplans.yaml
+- bases/migrations.kubevirt.io_virtualmachinestoragemigrations.yaml
+- bases/kubevirt.io_virtualmachineinstancemigrations.yaml
+- bases/kubevirt.io_virtualmachineinstances.yaml
+- bases/kubevirt.io_virtualmachines.yaml
+- bases/kubevirt.io_virtualmachineinstancepresets.yaml
+- bases/kubevirt.io_virtualmachineinstancereplicasets.yaml
+- bases/kubevirt.io_kubevirts.yaml
+- bases/cdi.kubevirt.io_datavolumes.yaml
+- bases/cdi.kubevirt.io_cdiconfigs.yaml
+- bases/cdi.kubevirt.io_cdis.yaml
+- bases/cdi.kubevirt.io_datasources.yaml
+- bases/cdi.kubevirt.io_volumeclonesources.yaml
+- bases/cdi.kubevirt.io_storageprofiles.yaml
+- bases/cdi.kubevirt.io_objecttransfers.yaml
+- bases/cdi.kubevirt.io_volumeimportsources.yaml
+- bases/cdi.kubevirt.io_volumeuploadsources.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

@@ -17,6 +17,6 @@ limitations under the License.
 
 package v1alpha1
 
-type MigMigrationExpansion interface{}
+type VirtualMachineStorageMigrationExpansion interface{}
 
-type MigPlanExpansion interface{}
+type VirtualMachineStorageMigrationPlanExpansion interface{}

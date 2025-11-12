@@ -11,8 +11,9 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/rand"
+	"k8s.io/utils/ptr"
 	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
-	"kubevirt.io/kubevirt-migration-controller/internal/controller/migplan"
+	"kubevirt.io/kubevirt-migration-controller/internal/controller/storagemigplan"
 )
 
 var _ = Describe("MigPlan", func() {
@@ -32,7 +33,7 @@ var _ = Describe("MigPlan", func() {
 	AfterEach(func() {
 		By("Deleting the test migplan")
 		Eventually(func() bool {
-			err := mcs.MigrationcontrollerV1alpha1().MigPlans(namespace).Delete(context.TODO(),
+			err := mcs.MigrationcontrollerV1alpha1().VirtualMachineStorageMigrationPlans(namespace).Delete(context.TODO(),
 				"test-plan", metav1.DeleteOptions{})
 			if k8serrors.IsNotFound(err) {
 				return true
@@ -53,23 +54,23 @@ var _ = Describe("MigPlan", func() {
 	})
 
 	It("plan should be marked as not ready when VM is missing", func() {
-		plan := &migrations.MigPlan{
+		plan := &migrations.VirtualMachineStorageMigrationPlan{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-plan",
 				Namespace: namespace,
 			},
-			Spec: migrations.MigPlanSpec{
-				VirtualMachines: []migrations.MigPlanVirtualMachine{
+			Spec: migrations.VirtualMachineStorageMigrationPlanSpec{
+				VirtualMachines: []migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
 					{
 						Name: "test-vm",
-						MigrationPVCs: []migrations.MigPlanMigrationPVC{
+						TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
 							{
 								VolumeName: "test-volume",
-								DestinationPVC: migrations.MigPlanDestinationPVC{
-									Name:         "test-pvc",
-									StorageClass: "test-storage-class",
-									AccessModes:  []migrations.MigPlanAccessMode{"ReadWriteOnce"},
-									VolumeMode:   "Filesystem",
+								DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+									Name:             ptr.To[string]("test-pvc"),
+									StorageClassName: ptr.To[string]("test-storage-class"),
+									AccessModes:      []migrations.VirtualMachineStorageMigrationPlanAccessMode{"ReadWriteOnce"},
+									VolumeMode:       ptr.To[corev1.PersistentVolumeMode]("Filesystem"),
 								},
 							},
 						},
@@ -77,14 +78,14 @@ var _ = Describe("MigPlan", func() {
 				},
 			},
 		}
-		_, err := mcs.MigrationcontrollerV1alpha1().MigPlans(namespace).Create(context.TODO(),
+		_, err := mcs.MigrationcontrollerV1alpha1().VirtualMachineStorageMigrationPlans(namespace).Create(context.TODO(),
 			plan, metav1.CreateOptions{})
 		Expect(err).ToNot(HaveOccurred())
 		Eventually(func() bool {
-			plan, err := mcs.MigrationcontrollerV1alpha1().MigPlans(namespace).Get(context.TODO(),
+			plan, err := mcs.MigrationcontrollerV1alpha1().VirtualMachineStorageMigrationPlans(namespace).Get(context.TODO(),
 				"test-plan", metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
-			return plan.Status.HasCriticalCondition(migplan.StorageMigrationNotPossible)
+			return plan.Status.HasCriticalCondition(storagemigplan.StorageMigrationNotPossible)
 		}, 30*time.Second, time.Second).Should(BeTrue())
 	})
 })

@@ -13,23 +13,33 @@ import (
 )
 
 const (
-	defaultK8sStorageClass  = "storageclass.kubernetes.io/is-default-class"
-	defaultVirtStorageClass = "storageclass.kubevirt.io/is-default-virt-class"
+	DefaultK8sStorageClass  = "storageclass.kubernetes.io/is-default-class"
+	DefaultVirtStorageClass = "storageclass.kubevirt.io/is-default-virt-class"
 )
 
 // Get a referenced MigPlan.
 // Returns `nil` when the reference cannot be resolved.
-func GetPlan(ctx context.Context, client k8sclient.Client, ref *corev1.ObjectReference) (*migrations.MigPlan, error) {
+func GetPlan(ctx context.Context,
+	client k8sclient.Client,
+	ref *corev1.ObjectReference) (*migrations.VirtualMachineStorageMigrationPlan, error) {
 	if ref == nil {
 		return nil, nil
 	}
-	migPlan := &migrations.MigPlan{}
+	migPlan := &migrations.VirtualMachineStorageMigrationPlan{}
 
 	if err := client.Get(ctx, types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}, migPlan); err != nil {
 		if k8serrors.IsNotFound(err) {
 			return nil, nil
 		}
 		return nil, err
+	}
+	// The kind and api version checks are needed because the object is not set up correctly in the test environment.
+	// TODO: remove this once the object is set up correctly in the test environment.
+	if migPlan.Kind == "" {
+		migPlan.Kind = migrations.VirtualMachineStorageMigrationPlanKind
+	}
+	if migPlan.APIVersion == "" {
+		migPlan.APIVersion = migrations.GroupVersion.String()
 	}
 	return migPlan, nil
 }
@@ -43,7 +53,7 @@ func GetDefaultStorageClass(ctx context.Context, client k8sclient.Client) (*stri
 		return nil, err
 	}
 	for _, sc := range scList.Items {
-		if sc.Annotations != nil && sc.Annotations[defaultK8sStorageClass] == "true" {
+		if sc.Annotations != nil && sc.Annotations[DefaultK8sStorageClass] == "true" {
 			return &sc.Name, nil
 		}
 	}
@@ -59,7 +69,7 @@ func GetDefaultVirtStorageClass(ctx context.Context, client k8sclient.Client) (*
 		return nil, err
 	}
 	for _, sc := range scList.Items {
-		if sc.Annotations != nil && sc.Annotations[defaultVirtStorageClass] == "true" {
+		if sc.Annotations != nil && sc.Annotations[DefaultVirtStorageClass] == "true" {
 			return &sc.Name, nil
 		}
 	}

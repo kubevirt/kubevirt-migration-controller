@@ -27,8 +27,8 @@ import (
 
 type MigrationcontrollerV1alpha1Interface interface {
 	RESTClient() rest.Interface
-	MigMigrationsGetter
-	MigPlansGetter
+	VirtualMachineStorageMigrationsGetter
+	VirtualMachineStorageMigrationPlansGetter
 }
 
 // MigrationcontrollerV1alpha1Client is used to interact with features provided by the migrationcontroller group.
@@ -36,12 +36,12 @@ type MigrationcontrollerV1alpha1Client struct {
 	restClient rest.Interface
 }
 
-func (c *MigrationcontrollerV1alpha1Client) MigMigrations(namespace string) MigMigrationInterface {
-	return newMigMigrations(c, namespace)
+func (c *MigrationcontrollerV1alpha1Client) VirtualMachineStorageMigrations(namespace string) VirtualMachineStorageMigrationInterface {
+	return newVirtualMachineStorageMigrations(c, namespace)
 }
 
-func (c *MigrationcontrollerV1alpha1Client) MigPlans(namespace string) MigPlanInterface {
-	return newMigPlans(c, namespace)
+func (c *MigrationcontrollerV1alpha1Client) VirtualMachineStorageMigrationPlans(namespace string) VirtualMachineStorageMigrationPlanInterface {
+	return newVirtualMachineStorageMigrationPlans(c, namespace)
 }
 
 // NewForConfig creates a new MigrationcontrollerV1alpha1Client for the given config.

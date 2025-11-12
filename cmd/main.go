@@ -38,10 +38,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	virtv1 "kubevirt.io/api/core/v1"
+	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 
 	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
-	"kubevirt.io/kubevirt-migration-controller/internal/controller/migmigration"
-	"kubevirt.io/kubevirt-migration-controller/internal/controller/migplan"
+	storagemig "kubevirt.io/kubevirt-migration-controller/internal/controller/storagemig"
+	storagemigplan "kubevirt.io/kubevirt-migration-controller/internal/controller/storagemigplan"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -53,6 +54,7 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(virtv1.AddToScheme(scheme))
+	utilruntime.Must(cdiv1.AddToScheme(scheme))
 
 	utilruntime.Must(migrations.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
@@ -206,20 +208,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&migplan.MigPlanReconciler{
+	if err = (&storagemigplan.StorageMigPlanReconciler{
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
-		EventRecorder: mgr.GetEventRecorderFor("migplan-controller"),
+		EventRecorder: mgr.GetEventRecorderFor("storagemigplan-controller"),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "MigPlan")
+		setupLog.Error(err, "unable to create controller", "controller", "StorageMigrationPlan")
 		os.Exit(1)
 	}
-	if err = (&migmigration.MigMigrationReconciler{
+	if err = (&storagemig.StorageMigrationReconciler{
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
-		EventRecorder: mgr.GetEventRecorderFor("migmigration-controller"),
+		EventRecorder: mgr.GetEventRecorderFor("storagemig-controller"),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "MigMigration")
+		setupLog.Error(err, "unable to create controller", "controller", "StorageMigration")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

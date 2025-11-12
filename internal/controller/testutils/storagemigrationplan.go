@@ -1,0 +1,102 @@
+package testutils
+
+import (
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
+	virtv1 "kubevirt.io/api/core/v1"
+	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
+	componenthelpers "kubevirt.io/kubevirt-migration-controller/pkg/component-helpers"
+)
+
+const (
+	TestNamespace     = "test-namespace"
+	TestMigPlanName   = "test-migplan"
+	TestSourcePVCName = "test-source-pvc"
+	TestTargetPVCName = "test-target-pvc"
+	TestVMName        = "test-vm"
+	TestVMIMName      = "test-vmim"
+	TestVolumeName    = "test-volume"
+)
+
+func NewVirtualMachineStorageMigrationPlan(name string) *migrations.VirtualMachineStorageMigrationPlan {
+	return &migrations.VirtualMachineStorageMigrationPlan{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       migrations.VirtualMachineStorageMigrationPlanKind,
+			APIVersion: migrations.GroupVersion.String(),
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: TestNamespace,
+		},
+		Spec: migrations.VirtualMachineStorageMigrationPlanSpec{
+			VirtualMachines: []migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+				{
+					Name: TestVMName,
+					TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+						{
+							VolumeName: TestVolumeName,
+							DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+								Name: ptr.To[string](TestTargetPVCName),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func NewVirtualMachine(name, namespace, volumeName, pvcName string) *virtv1.VirtualMachine {
+	return &virtv1.VirtualMachine{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: virtv1.VirtualMachineSpec{
+			Template: &virtv1.VirtualMachineInstanceTemplateSpec{
+				Spec: virtv1.VirtualMachineInstanceSpec{
+					Volumes: []virtv1.Volume{
+						{
+							Name: volumeName,
+							VolumeSource: virtv1.VolumeSource{
+								PersistentVolumeClaim: &virtv1.PersistentVolumeClaimVolumeSource{
+									PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+										ClaimName: pvcName,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Status: virtv1.VirtualMachineStatus{
+			Ready: true,
+			Conditions: []virtv1.VirtualMachineCondition{
+				{
+					Type:   componenthelpers.StorageLiveMigratable,
+					Status: corev1.ConditionTrue,
+				},
+			},
+		},
+	}
+}
+
+func NewPersistentVolumeClaim(name, namespace string) *corev1.PersistentVolumeClaim {
+	return &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: resource.MustParse("1Gi"),
+				},
+			},
+		},
+	}
+}
