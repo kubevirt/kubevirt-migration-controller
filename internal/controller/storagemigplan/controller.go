@@ -148,15 +148,17 @@ func (r *StorageMigPlanReconciler) processMigrations(ctx context.Context, plan *
 	if len(storageMigrationList.Items) == 0 {
 		plan.Status.SetCondition(progressCondition(corev1.ConditionFalse, "no storage migrations found"))
 		return nil
-	} else {
+	} else if plan.Status.HasCondition(migrations.Ready) {
 		plan.Status.SetCondition(progressCondition(corev1.ConditionTrue, "in progress storage migrations found"))
+	} else {
+		plan.Status.SetCondition(progressCondition(corev1.ConditionFalse, "plan is not ready"))
 	}
 
 	if err := r.updateReadyCompletedMigrations(plan, storageMigrationList.Items[len(storageMigrationList.Items)-1]); err != nil {
 		return err
 	}
 
-	if len(plan.Status.CompletedMigrations) == len(plan.Spec.VirtualMachines) {
+	if len(plan.Status.CompletedMigrations) == len(plan.Spec.VirtualMachines) && len(plan.Spec.VirtualMachines) > 0 {
 		plan.Status.SetCondition(progressCondition(corev1.ConditionFalse, "all storage migrations completed"))
 		plan.Status.SetCondition(readyCondition(corev1.ConditionFalse, "all storage migrations completed"))
 	}
