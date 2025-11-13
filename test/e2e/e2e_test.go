@@ -34,10 +34,10 @@ import (
 const namespace = "kubevirt-migration-system"
 
 // serviceAccountName created for the project
-const serviceAccountName = "kubevirt-migration-controller-manager"
+const serviceAccountName = "kubevirt-migration-controller"
 
 // metricsServiceName is the name of the metrics service of the project
-const metricsServiceName = "kubevirt-migration-controller-manager-metrics-service"
+const metricsServiceName = "kubevirt-migration-controller-metrics-service"
 
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
 const metricsRoleBindingName = "kubevirt-migration-metrics-binding"
@@ -69,7 +69,7 @@ var _ = Describe("Manager", Ordered, func() {
 	AfterEach(func() {
 		specReport := CurrentSpecReport()
 		if specReport.Failed() {
-			By("Fetching controller manager pod logs")
+			By("Fetching controller pod logs")
 			cmd := exec.Command(*kubectlPath, "logs", controllerPodName, "-n", namespace)
 			controllerLogs, err := utils.Run(cmd)
 			if err == nil {
@@ -96,7 +96,7 @@ var _ = Describe("Manager", Ordered, func() {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get curl-metrics logs: %s", err)
 			}
 
-			By("Fetching controller manager pod description")
+			By("Fetching controller pod description")
 			cmd = exec.Command(*kubectlPath, "describe", "pod", controllerPodName, "-n", namespace)
 			podDescription, err := utils.Run(cmd)
 			if err == nil {
@@ -112,11 +112,11 @@ var _ = Describe("Manager", Ordered, func() {
 
 	Context("Manager", func() {
 		It("should run successfully", func() {
-			By("validating that the controller-manager pod is running as expected")
+			By("validating that the controller pod is running as expected")
 			verifyControllerUp := func(g Gomega) {
-				// Get the name of the controller-manager pod
+				// Get the name of the controller pod
 				cmd := exec.Command(*kubectlPath, "get",
-					"pods", "-l", "control-plane=controller-manager",
+					"pods", "-l", "control-plane=controller",
 					"-o", "go-template={{ range .items }}"+
 						"{{ if not .metadata.deletionTimestamp }}"+
 						"{{ .metadata.name }}"+
@@ -125,11 +125,11 @@ var _ = Describe("Manager", Ordered, func() {
 				)
 
 				podOutput, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve controller-manager pod information")
+				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve controller pod information")
 				podNames := utils.GetNonEmptyLines(podOutput)
 				g.Expect(podNames).To(HaveLen(1), "expected 1 controller pod running")
 				controllerPodName = podNames[0]
-				g.Expect(controllerPodName).To(ContainSubstring("controller-manager"))
+				g.Expect(controllerPodName).To(ContainSubstring("controller"))
 
 				// Validate the pod's status
 				cmd = exec.Command(*kubectlPath, "get",
@@ -138,7 +138,7 @@ var _ = Describe("Manager", Ordered, func() {
 				)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("Running"), "Incorrect controller-manager pod status")
+				g.Expect(output).To(Equal("Running"), "Incorrect controller pod status")
 			}
 			Eventually(verifyControllerUp).Should(Succeed())
 		})
@@ -177,7 +177,7 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 			Eventually(verifyMetricsEndpointReady).Should(Succeed())
 
-			By("verifying that the controller manager is serving the metrics server")
+			By("verifying that the controller is serving the metrics server")
 			verifyMetricsServerStarted := func(g Gomega) {
 				cmd := exec.Command(*kubectlPath, "logs", controllerPodName, "-n", namespace)
 				output, err := utils.Run(cmd)
