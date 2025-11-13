@@ -26,5 +26,8 @@ go.work
 *.swo
 *~
 
+#kustomize
+config/manager/kustomization.yaml
+
 # kubevirtci
 _ci-configs/*

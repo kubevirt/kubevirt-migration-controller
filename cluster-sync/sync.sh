@@ -28,6 +28,8 @@ else
 fi
 make deploy MANIFEST_IMG="${MANIFEST_IMG}"
 
+if [[ "$KUBEVIRT_PROVIDER" != "external" ]]; then
 # Install CertManager
 _kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml
 _kubectl wait deployment.apps/cert-manager-webhook --for condition=Available --namespace cert-manager --timeout 5m
+fi
