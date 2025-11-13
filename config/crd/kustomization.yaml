@@ -6,7 +6,6 @@
 resources:
 - bases/migrations.kubevirt.io_virtualmachinestoragemigrationplans.yaml
 - bases/migrations.kubevirt.io_virtualmachinestoragemigrations.yaml
-- bases/route.openshift.io_routes.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

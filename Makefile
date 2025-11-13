@@ -53,6 +53,7 @@ OPERATOR_SDK_VERSION ?= v1.40.0
 IMG ?= kubevirt-migration-controller:latest
 
 DOCKER_REPO ?= localhost
+DEPLOYMENT_TARGET ?= default
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -199,7 +200,7 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
 	mkdir -p dist
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	$(KUSTOMIZE) build config/default > dist/install.yaml
+	$(KUSTOMIZE) build config/$(DEPLOYMENT_TARGET) > dist/install.yaml
 
 ##@ Deployment
 
@@ -219,11 +220,11 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
 	@echo "Deploying controller to the K8s cluster specified in ~/.kube/config. MANIFEST_IMG: ${MANIFEST_IMG}"
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${MANIFEST_IMG}
-	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
+	$(KUSTOMIZE) build config/$(DEPLOYMENT_TARGET) | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
+	$(KUSTOMIZE) build config/$(DEPLOYMENT_TARGET) | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
 
 ##@ Dependencies
 
