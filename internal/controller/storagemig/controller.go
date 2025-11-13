@@ -36,7 +36,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
@@ -54,11 +53,12 @@ type StorageMigrationReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	record.EventRecorder
+	Log logr.Logger
 }
 
-// +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=migmigrations,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=migmigrations/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=migmigrations/finalizers,verbs=update
+// +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=virtualmachinestoragemigrations,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=virtualmachinestoragemigrations/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=virtualmachinestoragemigrations/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=list;watch;update
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=list;watch
 // +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachines,verbs=get;list;watch
@@ -74,8 +74,8 @@ type StorageMigrationReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.4/pkg/reconcile
 func (r *StorageMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-	log.Info("Reconciling MigMigration", "name", req.NamespacedName.Name)
+	log := r.Log
+	log.V(5).Info("Reconciling VirtualMachineStorageMigration", "name", req.NamespacedName.Name)
 	// Fetch the MigMigration instance
 	migration := &migrations.VirtualMachineStorageMigration{}
 
@@ -87,8 +87,8 @@ func (r *StorageMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	if migration.DeletionTimestamp != nil {
-		log.WithName(migration.Name).Info("MigMigration is being deleted")
-		migration.RemoveFinalizer(migrations.VirtualMachineStorageMigrationFinalizer)
+		log.V(3).Info("VirtualMachineStorageMigration is being deleted")
+		migration.RemoveFinalizer(migrations.VirtualMachineStorageMigrationFinalizer, log)
 		if err := r.Update(context.TODO(), migration); err != nil {
 			return reconcile.Result{}, err
 		}
@@ -99,14 +99,14 @@ func (r *StorageMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// Completed.
 	if migration.Status.Phase == migrations.Completed {
-		log.WithName(migration.Name).Info("MigMigration is completed")
+		log.V(3).Info("VirtualMachineStorageMigration is completed")
 		return reconcile.Result{}, nil
 	}
 
 	if migration.Spec.VirtualMachineStorageMigrationPlanRef != nil {
 		migration.Spec.VirtualMachineStorageMigrationPlanRef.Namespace = migration.Namespace
 	} else {
-		log.WithName(migration.Name).Info("No plan reference found")
+		log.V(3).Info("No plan reference found")
 		return reconcile.Result{}, nil
 	}
 	plan, err := componenthelpers.GetPlan(ctx, r.Client, migration.Spec.VirtualMachineStorageMigrationPlanRef)
@@ -118,11 +118,10 @@ func (r *StorageMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		migration.Status.DeleteCondition(InvalidPlanRef)
 
 		// Owner Reference
-		r.setOwnerReference(plan, migration, log.WithName(migration.Name))
+		r.setOwnerReference(plan, migration)
 
 		// Validate
-		r.validate(plan, migration, log)
-		log.V(5).Info("migration conditions", "conditions", migration.Status.Conditions)
+		r.validate(plan, migration)
 	} else {
 		migration.Status.SetCondition(migrations.Condition{
 			Type:     InvalidPlanRef,
@@ -138,18 +137,19 @@ func (r *StorageMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// Migrate
 	if !migration.Status.HasBlockerCondition() {
-		log.WithName(migration.Name).Info("Starting migration")
+		log.V(5).Info("Starting VirtualMachineStorageMigration")
 		var err error
 		requeueAfter, err = r.migrate(ctx, plan, migration)
 		if err != nil {
 			return reconcile.Result{}, err
 		}
 	}
-	migrationCopy := migration.DeepCopy()
 
+	// Make a copy of the migration object so we can keep the finalizers
+	migrationCopy := migration.DeepCopy()
 	// Apply changes to the status.
 	if !apiequality.Semantic.DeepEqual(migration.Status, origMigration.Status) {
-		log.WithName(migration.Name).Info("Updating migration status")
+		log.V(1).Info("Updating VirtualMachineStorageMigration status", "phase", migration.Status.Phase)
 		if err := r.Status().Update(context.TODO(), migration); err != nil {
 			return reconcile.Result{}, err
 		}
@@ -158,20 +158,20 @@ func (r *StorageMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// Apply changes to the migration.
 	if !apiequality.Semantic.DeepEqual(migration.ObjectMeta, origMigration.ObjectMeta) {
 		migration.Finalizers = migrationCopy.Finalizers
-		log.WithName(migration.Name).Info("Updating migration object metadata", "finalizers", migration.Finalizers)
+		log.V(1).Info("Updating VirtualMachineStorageMigration object metadata", "finalizers", migration.Finalizers)
 		if err := r.Update(context.TODO(), migration); err != nil {
 			return reconcile.Result{}, err
 		}
 	}
 
-	log.WithName(migration.Name).Info("Reconciling MigMigration completed")
+	log.V(1).Info("Reconciling VirtualMachineStorageMigration completed")
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
 // Set the owner reference is set to the plan.
-func (r *StorageMigrationReconciler) setOwnerReference(plan *migrations.VirtualMachineStorageMigrationPlan, migration *migrations.VirtualMachineStorageMigration, log logr.Logger) {
+func (r *StorageMigrationReconciler) setOwnerReference(plan *migrations.VirtualMachineStorageMigrationPlan, migration *migrations.VirtualMachineStorageMigration) {
 	if plan == nil {
-		log.Info("No plan found")
+		r.Log.Info("No plan found")
 		return
 	}
 	for i := range migration.OwnerReferences {
@@ -180,11 +180,11 @@ func (r *StorageMigrationReconciler) setOwnerReference(plan *migrations.VirtualM
 			ref.APIVersion = plan.APIVersion
 			ref.Name = plan.Name
 			ref.UID = plan.UID
-			log.Info("Owner reference already set")
+			r.Log.Info("Owner reference already set")
 			return
 		}
 	}
-	log.Info("Adding owner reference", "plan metadata", plan.TypeMeta)
+	r.Log.Info("Adding owner reference", "plan metadata", plan.TypeMeta)
 	migration.OwnerReferences = append(
 		migration.OwnerReferences,
 		metav1.OwnerReference{
@@ -193,7 +193,7 @@ func (r *StorageMigrationReconciler) setOwnerReference(plan *migrations.VirtualM
 			Name:       plan.Name,
 			UID:        plan.UID,
 		})
-	log.Info("migration owner reference", "owner reference", migration.OwnerReferences)
+	r.Log.Info("migration owner reference", "owner reference", migration.OwnerReferences)
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -210,10 +210,7 @@ func (r *StorageMigrationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		predicate.TypedFuncs[*migrations.VirtualMachineStorageMigration]{
 			CreateFunc: func(e event.TypedCreateEvent[*migrations.VirtualMachineStorageMigration]) bool { return true },
 			DeleteFunc: func(e event.TypedDeleteEvent[*migrations.VirtualMachineStorageMigration]) bool { return true },
-			UpdateFunc: func(e event.TypedUpdateEvent[*migrations.VirtualMachineStorageMigration]) bool {
-				return !apiequality.Semantic.DeepEqual(e.ObjectOld.Spec, e.ObjectNew.Spec) ||
-					!apiequality.Semantic.DeepEqual(e.ObjectOld.DeletionTimestamp, e.ObjectNew.DeletionTimestamp)
-			},
+			UpdateFunc: func(e event.TypedUpdateEvent[*migrations.VirtualMachineStorageMigration]) bool { return true },
 		},
 	)); err != nil {
 		return err
@@ -271,13 +268,15 @@ func (r *StorageMigrationReconciler) getMigMigrationsForPlan(ctx context.Context
 }
 
 func (r *StorageMigrationReconciler) getMigMigrationsForVMIM(ctx context.Context, vmim *virtv1.VirtualMachineInstanceMigration) []reconcile.Request {
-	migrations := &migrations.VirtualMachineStorageMigrationList{}
+	migrationList := &migrations.VirtualMachineStorageMigrationList{}
 	requests := []reconcile.Request{}
-	if err := r.List(ctx, migrations, client.InNamespace(vmim.Namespace)); err != nil {
+	if err := r.List(ctx, migrationList, client.InNamespace(vmim.Namespace)); err != nil {
 		return nil
 	}
-	for _, migration := range migrations.Items {
-		if slices.Contains(migration.Status.RunningMigrations, vmim.Spec.VMIName) {
+	for _, migration := range migrationList.Items {
+		if slices.ContainsFunc(migration.Status.RunningMigrations, func(runningMigration migrations.RunningVirtualMachineMigration) bool {
+			return runningMigration.Name == vmim.Spec.VMIName
+		}) {
 			requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: migration.Name, Namespace: migration.Namespace}})
 		}
 	}

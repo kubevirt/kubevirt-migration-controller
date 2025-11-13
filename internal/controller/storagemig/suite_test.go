@@ -31,6 +31,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	routev1 "github.com/openshift/api/route/v1"
 	virtv1 "kubevirt.io/api/core/v1"
 	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
@@ -63,6 +64,7 @@ var _ = BeforeSuite(func() {
 	Expect(migrations.AddToScheme(scheme.Scheme)).NotTo(HaveOccurred())
 	Expect(virtv1.AddToScheme(scheme.Scheme)).NotTo(HaveOccurred())
 	Expect(cdiv1.AddToScheme(scheme.Scheme)).NotTo(HaveOccurred())
+	Expect(routev1.AddToScheme(scheme.Scheme)).NotTo(HaveOccurred())
 	// +kubebuilder:scaffold:scheme
 
 	By("bootstrapping test environment")

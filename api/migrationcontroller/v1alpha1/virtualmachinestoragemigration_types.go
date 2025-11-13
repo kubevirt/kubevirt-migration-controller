@@ -53,10 +53,15 @@ type Phase string
 // VirtualMachineStorageMigrationStatus defines the observed state of VirtualMachineStorageMigration
 type VirtualMachineStorageMigrationStatus struct {
 	Conditions          `json:",inline"`
-	Phase               Phase    `json:"phase,omitempty"`
-	Errors              []string `json:"errors,omitempty"`
-	RunningMigrations   []string `json:"runningMigrations,omitempty"`
-	CompletedMigrations []string `json:"completedMigrations,omitempty"`
+	Phase               Phase                            `json:"phase,omitempty"`
+	Errors              []string                         `json:"errors,omitempty"`
+	RunningMigrations   []RunningVirtualMachineMigration `json:"runningMigrations,omitempty"`
+	CompletedMigrations []string                         `json:"completedMigrations,omitempty"`
+}
+
+type RunningVirtualMachineMigration struct {
+	Name     string `json:"name"`
+	Progress string `json:"progress,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -65,8 +70,7 @@ type VirtualMachineStorageMigrationStatus struct {
 // VirtualMachineStorageMigration is the Schema for the virtualmachinestoragemigrations API
 // +k8s:openapi-gen=true
 // +genclient
-// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].status"
-// +kubebuilder:printcolumn:name="Plan",type=string,JSONPath=".spec.migPlanRef.name"
+// +kubebuilder:printcolumn:name="Plan",type=string,JSONPath=".spec.virtualMachineStorageMigrationPlanRef.name"
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 type VirtualMachineStorageMigration struct {
@@ -132,18 +136,19 @@ func HasFinalizer(object metav1.Object, value string) bool {
 // SetFinalizer adds the passed in finalizer to the migration
 func (r *VirtualMachineStorageMigration) AddFinalizer(finalizer string, log logr.Logger) {
 	if HasFinalizer(r, finalizer) {
-		log.Info("Finalizer already exists", "finalizer", finalizer)
+		log.V(5).Info("Finalizer already exists", "finalizer", finalizer)
 		return
 	}
 	r.Finalizers = append(r.Finalizers, finalizer)
-	log.Info("Added finalizer", "finalizer", finalizer)
+	log.V(5).Info("Added finalizer", "finalizer", finalizer)
 }
 
 // RemoveFinalizer removes the passed in finalizer from the migration
-func (r *VirtualMachineStorageMigration) RemoveFinalizer(finalizer string) {
+func (r *VirtualMachineStorageMigration) RemoveFinalizer(finalizer string, log logr.Logger) {
 	for i, f := range r.Finalizers {
 		if f == finalizer {
 			r.Finalizers = append(r.Finalizers[:i], r.Finalizers[i+1:]...)
+			log.V(5).Info("Removed finalizer", "finalizer", finalizer)
 			break
 		}
 	}

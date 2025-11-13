@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"path"
 
-	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
 )
@@ -30,7 +29,8 @@ const (
 )
 
 // Validate the migration resource.
-func (r *StorageMigrationReconciler) validate(plan *migrations.VirtualMachineStorageMigrationPlan, migration *migrations.VirtualMachineStorageMigration, log logr.Logger) {
+func (r *StorageMigrationReconciler) validate(plan *migrations.VirtualMachineStorageMigrationPlan, migration *migrations.VirtualMachineStorageMigration) {
+	log := r.Log
 	// verify the migration is owned by a plan
 	ownerReference := migration.FindOwnerReference()
 	if ownerReference == nil {

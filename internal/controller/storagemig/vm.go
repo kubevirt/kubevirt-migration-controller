@@ -205,6 +205,11 @@ func (t *Task) updateVMForStorageMigration(ctx context.Context, vm *virtv1.Virtu
 	return nil
 }
 
+// Update the VirtualMachineStorageMigrationPlan to trigger a refresh of virtual machine statuses.
+// This is used to ensure that the VirtualMachineStorageMigrationPlan is updated with the latest status of the virtual machines.
+// This is done by adding a start time annotation to the plan and then waiting for the plan to refresh.
+// The plan controller will put the end time annotation on the plan when the refresh is complete.
+// If the end time is after the start time, then the refresh is complete and we can start the live migration.
 func (t *Task) refreshReadyVirtualMachines(ctx context.Context) error {
 	plan, err := componenthelpers.GetPlan(ctx, t.Client, t.Owner.Spec.VirtualMachineStorageMigrationPlanRef)
 	if err != nil {
@@ -221,9 +226,11 @@ func (t *Task) refreshReadyVirtualMachines(ctx context.Context) error {
 	}
 	planCopy.Annotations[storagemigplan.RefreshStartTimeAnnotation] = time.Now().Format(time.RFC3339Nano)
 	delete(planCopy.Annotations, storagemigplan.RefreshEndTimeAnnotation)
+	t.Log.V(1).Info("new plan annotations", "annotations", planCopy.Annotations)
 	if err := t.Client.Patch(ctx, planCopy, client.MergeFrom(plan)); err != nil {
 		return err
 	}
+	t.Log.V(1).Info("refreshed plan annotations", "annotations", planCopy.Annotations)
 	return nil
 }
 

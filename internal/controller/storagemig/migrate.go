@@ -20,15 +20,12 @@ import (
 	"context"
 	"time"
 
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
-
 	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
 )
 
 // Perform the migration.
 func (r *StorageMigrationReconciler) migrate(ctx context.Context, plan *migrations.VirtualMachineStorageMigrationPlan, migration *migrations.VirtualMachineStorageMigration) (time.Duration, error) {
-	log := logf.FromContext(ctx)
-
+	log := r.Log
 	// Run
 	task := Task{
 		Client: r.Client,
@@ -37,7 +34,7 @@ func (r *StorageMigrationReconciler) migrate(ctx context.Context, plan *migratio
 		Log:    log,
 	}
 
-	log.Info("Calling task.Run")
+	log.V(5).Info("Calling task.Run")
 	if err := task.Run(ctx); err != nil {
 		log.Error(err, "Task.Run failed")
 		return task.Requeue, err

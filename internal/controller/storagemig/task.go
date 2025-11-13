@@ -10,6 +10,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
 
+	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	"github.com/prometheus/common/model"
 	virtv1 "kubevirt.io/api/core/v1"
 	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
 )
@@ -24,40 +26,16 @@ const (
 	virtLauncherPodLabelSelectorValue = "virt-launcher"
 )
 
-// Get a progress report.
-// Returns: phase, n, total.
-// func (r Itinerary) progressReport(phaseName string) (string, int, int) {
-// 	n := 0
-// 	total := len(r.Phases)
-// 	for i, phase := range r.Phases {
-// 		if string(phase) == phaseName {
-// 			n = i + 1
-// 			break
-// 		}
-// 	}
-
-// 	return phaseName, n, total
-// }
-
-// A task that provides the complete migration workflow.
-// Log - A controller's logger.
-// Client - A controller's (local) client.
-// Owner - A MigMigration resource.
-// PlanResources - A PlanRefResources.
-// Annotations - Map of annotations to applied to the backup & restore
-// Phase - The task phase.
-// Requeue - The requeueAfter duration. 0 indicates no requeue.
-// Itinerary - The phase itinerary.
-// Errors - Migration errors.
-// Failed - Task phase has failed.
 type Task struct {
-	Scheme  *runtime.Scheme
-	Log     logr.Logger
-	Client  k8sclient.Client
-	Owner   *migrations.VirtualMachineStorageMigration
-	Plan    *migrations.VirtualMachineStorageMigrationPlan
-	Requeue time.Duration
-	Errors  []string
+	Scheme        *runtime.Scheme
+	Log           logr.Logger
+	Client        k8sclient.Client
+	Owner         *migrations.VirtualMachineStorageMigration
+	Plan          *migrations.VirtualMachineStorageMigrationPlan
+	Requeue       time.Duration
+	Errors        []string
+	PrometheusAPI prometheusv1.API
+	PromQuery     func(ctx context.Context, query string, ts time.Time, opts ...prometheusv1.Option) (model.Value, prometheusv1.Warnings, error)
 }
 
 // Run the task.
@@ -71,20 +49,24 @@ func (t *Task) Run(ctx context.Context) error {
 	t.Requeue = NoReQ
 
 	t.init()
+	log := t.Log
 
-	t.Log.Info("Running task.Run", "phase", t.Owner.Status.Phase)
+	log.Info("Running task.Run", "phase", t.Owner.Status.Phase)
 	// Run the current phase.
 	switch t.Owner.Status.Phase {
 	case migrations.Started:
+		log.Info("Processing Started phase")
 		// Set finalizer on migration
 		t.Owner.AddFinalizer(migrations.VirtualMachineStorageMigrationFinalizer, t.Log)
 		t.Owner.Status.Phase = migrations.RefreshStorageMigrationPlan
 	case migrations.RefreshStorageMigrationPlan:
+		log.Info("Processing RefreshStorageMigrationPlan phase")
 		if err := t.refreshReadyVirtualMachines(ctx); err != nil {
 			return err
 		}
 		t.Owner.Status.Phase = migrations.WaitForStorageMigrationPlanRefreshCompletion
 	case migrations.WaitForStorageMigrationPlanRefreshCompletion:
+		log.Info("Processing WaitForStorageMigrationPlanRefreshCompletion phase")
 		if completed, err := t.refreshCompletedVirtualMachines(ctx); err != nil {
 			return err
 		} else if !completed {
@@ -92,7 +74,7 @@ func (t *Task) Run(ctx context.Context) error {
 		}
 		t.Owner.Status.Phase = migrations.BeginLiveMigration
 	case migrations.BeginLiveMigration:
-		t.Log.Info("Beginning live migration", "readyMigrations", len(t.Plan.Status.ReadyMigrations))
+		log.Info("Processing BeginLiveMigration phase", "readyMigrations", len(t.Plan.Status.ReadyMigrations))
 		for _, vm := range t.Plan.Status.ReadyMigrations {
 			if can, err := t.canVMStorageMigrate(ctx, vm.Name); err != nil {
 				return err
@@ -104,19 +86,29 @@ func (t *Task) Run(ctx context.Context) error {
 				return err
 			}
 			t.Log.V(3).Info("VM migration is running", "vm", vm.Name)
-			t.Owner.Status.RunningMigrations = append(t.Owner.Status.RunningMigrations, vm.Name)
+			t.Owner.Status.RunningMigrations = append(t.Owner.Status.RunningMigrations, migrations.RunningVirtualMachineMigration{
+				Name: vm.Name,
+			})
 		}
 		t.Owner.Status.Phase = migrations.WaitForLiveMigrationToComplete
 	case migrations.WaitForLiveMigrationToComplete:
-		runningMigrations := make([]string, 0)
+		log.Info("Processing WaitForLiveMigrationToComplete phase", "runningMigrations", len(t.Owner.Status.RunningMigrations))
+		runningMigrations := make([]migrations.RunningVirtualMachineMigration, 0)
 		for _, vm := range t.Owner.Status.RunningMigrations {
-			if ok, err := t.isLiveMigrationToComplete(ctx, vm); err != nil {
+			if ok, err := t.isLiveMigrationCompleted(ctx, vm.Name); err != nil {
 				return err
 			} else if !ok {
 				runningMigrations = append(runningMigrations, vm)
+				progress, err := t.getLastObservedProgressPercent(ctx, vm.Name, t.Owner.Namespace)
+				if err != nil {
+					return err
+				}
+				if progress != "" {
+					vm.Progress = progress
+				}
 				continue
 			}
-			t.Owner.Status.CompletedMigrations = append(t.Owner.Status.CompletedMigrations, vm)
+			t.Owner.Status.CompletedMigrations = append(t.Owner.Status.CompletedMigrations, vm.Name)
 		}
 		t.Owner.Status.RunningMigrations = runningMigrations
 		if len(runningMigrations) == 0 {
@@ -127,6 +119,7 @@ func (t *Task) Run(ctx context.Context) error {
 		if err := t.cleanupMigrationResources(ctx); err != nil {
 			return err
 		}
+		t.Owner.RemoveFinalizer(migrations.VirtualMachineStorageMigrationFinalizer, t.Log)
 		t.Owner.Status.Phase = migrations.Completed
 	case migrations.Canceled:
 		t.Owner.Status.DeleteCondition(string(migrations.Canceling))
@@ -137,13 +130,14 @@ func (t *Task) Run(ctx context.Context) error {
 			Category: migrations.Advisory,
 			Message:  "The migration has been canceled.",
 		})
+		t.Owner.RemoveFinalizer(migrations.VirtualMachineStorageMigrationFinalizer, t.Log)
 	default:
 		t.Requeue = NoReQ
 	}
 	return nil
 }
 
-func (t *Task) isLiveMigrationToComplete(ctx context.Context, vmName string) (bool, error) {
+func (t *Task) isLiveMigrationCompleted(ctx context.Context, vmName string) (bool, error) {
 	// In order to determine if the live migration is complete, we need to check the VMIM status.
 	vmimList := &virtv1.VirtualMachineInstanceMigrationList{}
 	if err := t.Client.List(ctx, vmimList, k8sclient.InNamespace(t.Owner.Namespace)); err != nil {
@@ -152,6 +146,7 @@ func (t *Task) isLiveMigrationToComplete(ctx context.Context, vmName string) (bo
 	var activeVMIM *virtv1.VirtualMachineInstanceMigration
 	for _, vmim := range vmimList.Items {
 		if vmim.Spec.VMIName == vmName && vmim.Status.Phase != virtv1.MigrationFailed {
+			t.Log.Info("Found active VMIM", "vmim", vmim.Name)
 			activeVMIM = &vmim
 			break
 		}
@@ -159,6 +154,7 @@ func (t *Task) isLiveMigrationToComplete(ctx context.Context, vmName string) (bo
 	if activeVMIM == nil {
 		return false, nil
 	}
+	t.Log.Info("is active VMIM completed", "completed", activeVMIM.Status.MigrationState != nil && activeVMIM.Status.MigrationState.Completed && !activeVMIM.Status.MigrationState.Failed)
 	return activeVMIM.Status.MigrationState != nil && activeVMIM.Status.MigrationState.Completed && !activeVMIM.Status.MigrationState.Failed, nil
 }
 

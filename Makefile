@@ -109,6 +109,7 @@ manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and Cust
 	# Remove the datavolumetemplatespecs CRD because it is not needed
 	rm config/crd/bases/kubevirt.io_datavolumetemplatespecs.yaml
 	$(CONTROLLER_GEN) crd paths="./vendor/kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1/..." output:crd:artifacts:config=config/crd/bases
+	$(CONTROLLER_GEN) crd paths="./vendor/github.com/openshift/api/route/v1" output:crd:artifacts:config=config/crd/bases
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.

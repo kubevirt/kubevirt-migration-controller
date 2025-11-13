@@ -2,7 +2,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: manager-role
+  name: controller-role
 rules:
 - apiGroups:
   - ""
@@ -24,6 +24,7 @@ rules:
   resources:
   - persistentvolumes
   - pods
+  - configmaps
   verbs:
   - list
   - watch
@@ -44,6 +45,14 @@ rules:
   - watch
   - patch
 - apiGroups:
+  - kubevirt.io
+  resources:
+  - virtualmachineinstancemigrations
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - cdi.kubevirt.io
   resources:
   - datavolumes
@@ -58,8 +67,8 @@ rules:
 - apiGroups:
   - migrations.kubevirt.io
   resources:
-  - migmigrations
-  - migplans
+  - virtualmachinestoragemigrations
+  - virtualmachinestoragemigrationplans
   verbs:
   - create
   - delete
@@ -71,15 +80,14 @@ rules:
 - apiGroups:
   - migrations.kubevirt.io
   resources:
-  - migmigrations/finalizers
-  - migplans/finalizers
+  - virtualmachinestoragemigrations/finalizers
   verbs:
   - update
 - apiGroups:
   - migrations.kubevirt.io
   resources:
-  - migmigrations/status
-  - migplans/status
+  - virtualmachinestoragemigrations/status
+  - virtualmachinestoragemigrationplans/status
   verbs:
   - get
   - patch
@@ -91,3 +99,11 @@ rules:
   verbs:
   - list
   - watch
+- apiGroups:
+  - route.openshift.io
+  resources:
+  - routes
+  verbs:
+  - list
+  - watch
+  - get

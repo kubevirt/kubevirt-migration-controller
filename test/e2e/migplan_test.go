@@ -85,7 +85,7 @@ var _ = Describe("MigPlan", func() {
 			plan, err := mcs.MigrationcontrollerV1alpha1().VirtualMachineStorageMigrationPlans(namespace).Get(context.TODO(),
 				"test-plan", metav1.GetOptions{})
 			Expect(err).ToNot(HaveOccurred())
-			return plan.Status.HasCriticalCondition(storagemigplan.StorageMigrationNotPossible)
+			return plan.Status.HasCriticalCondition(storagemigplan.StorageMigrationNotPossibleType)
 		}, 30*time.Second, time.Second).Should(BeTrue())
 	})
 })

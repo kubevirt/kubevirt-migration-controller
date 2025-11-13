@@ -72,7 +72,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 		})
 
 		DescribeTable("validateKubeVirtInstalled sets correct conditions",
-			func(kv *virtv1.KubeVirt, expectType string) {
+			func(kv *virtv1.KubeVirt, expectedReason string) {
 				if kv != nil {
 					createKubeVirt(ctx, reconciler.Client, kv)
 					vm := testutils.NewVirtualMachine("test-vm", testutils.TestNamespace, "test-volume", originalPVCName)
@@ -93,14 +93,25 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				err = reconciler.Client.Get(ctx, typeNamespacedName, updated)
 				Expect(err).NotTo(HaveOccurred())
 
-				Expect(updated.Status.Conditions.List).To(ContainElement(
-					And(
-						HaveField("Type", expectType),
-						HaveField("Status", corev1.ConditionTrue),
-					),
-				), "Expected conditions differ from found")
+				if expectedReason == migrations.Ready {
+					Expect(updated.Status.Conditions.List).To(ContainElement(
+						And(
+							HaveField("Type", migrations.Ready),
+							HaveField("Category", migrations.Required),
+							HaveField("Status", corev1.ConditionTrue),
+						),
+					), "Expected conditions differ from found")
+				} else {
+					Expect(updated.Status.Conditions.List).To(ContainElement(
+						And(
+							HaveField("Type", StorageMigrationNotPossibleType),
+							HaveField("Reason", expectedReason),
+							HaveField("Status", corev1.ConditionTrue),
+						),
+					), "Expected conditions differ from found")
+				}
 			},
-			Entry("no KubeVirt objects", nil, KubeVirtNotInstalledSourceCluster),
+			Entry("no KubeVirt objects", nil, KubeVirtNotInstalledReason),
 			Entry("invalid operator version", &virtv1.KubeVirt{
 				ObjectMeta: metav1.ObjectMeta{Name: "kv", Namespace: kvNamespace},
 				Spec: virtv1.KubeVirtSpec{
@@ -109,7 +120,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				Status: virtv1.KubeVirtStatus{
 					OperatorVersion: "not-a-version",
 				},
-			}, KubeVirtVersionNotSupported),
+			}, KubeVirtVersionNotSupportedReason),
 			Entry("invalid operator version, with dots", &virtv1.KubeVirt{
 				ObjectMeta: metav1.ObjectMeta{Name: "kv", Namespace: kvNamespace},
 				Spec: virtv1.KubeVirtSpec{
@@ -118,7 +129,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				Status: virtv1.KubeVirtStatus{
 					OperatorVersion: "v1.3.z",
 				},
-			}, KubeVirtVersionNotSupported),
+			}, KubeVirtVersionNotSupportedReason),
 			Entry("invalid operator version, with dots", &virtv1.KubeVirt{
 				ObjectMeta: metav1.ObjectMeta{Name: "kv", Namespace: kvNamespace},
 				Spec: virtv1.KubeVirtSpec{
@@ -127,7 +138,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				Status: virtv1.KubeVirtStatus{
 					OperatorVersion: "vx.3.0",
 				},
-			}, KubeVirtVersionNotSupported),
+			}, KubeVirtVersionNotSupportedReason),
 			Entry("invalid operator version, with dots", &virtv1.KubeVirt{
 				ObjectMeta: metav1.ObjectMeta{Name: "kv", Namespace: kvNamespace},
 				Spec: virtv1.KubeVirtSpec{
@@ -136,7 +147,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				Status: virtv1.KubeVirtStatus{
 					OperatorVersion: "v1.y.0",
 				},
-			}, KubeVirtVersionNotSupported),
+			}, KubeVirtVersionNotSupportedReason),
 			Entry("operator version < 1.3.0", &virtv1.KubeVirt{
 				ObjectMeta: metav1.ObjectMeta{Name: "kv", Namespace: kvNamespace},
 				Spec: virtv1.KubeVirtSpec{
@@ -145,7 +156,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				Status: virtv1.KubeVirtStatus{
 					OperatorVersion: "v1.2.0",
 				},
-			}, KubeVirtVersionNotSupported),
+			}, KubeVirtVersionNotSupportedReason),
 			Entry("operator version >= 1.3.0 but rollout strategy not set", &virtv1.KubeVirt{
 				ObjectMeta: metav1.ObjectMeta{Name: "kv", Namespace: kvNamespace},
 				Spec: virtv1.KubeVirtSpec{
@@ -156,7 +167,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				Status: virtv1.KubeVirtStatus{
 					OperatorVersion: "v1.3.0",
 				},
-			}, KubeVirtStorageLiveMigrationNotEnabled),
+			}, KubeVirtStorageLiveMigrationNotEnabledReason),
 			Entry("operator version >= 1.3.0, rollout strategy not HaveOccurredLiveUpdate", &virtv1.KubeVirt{
 				ObjectMeta: metav1.ObjectMeta{Name: "kv", Namespace: kvNamespace},
 				Spec: virtv1.KubeVirtSpec{
@@ -167,7 +178,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				Status: virtv1.KubeVirtStatus{
 					OperatorVersion: "v1.3.0",
 				},
-			}, KubeVirtStorageLiveMigrationNotEnabled),
+			}, KubeVirtStorageLiveMigrationNotEnabledReason),
 			Entry("operator version >= 1.5.0 live migration is enabled", &virtv1.KubeVirt{
 				ObjectMeta: metav1.ObjectMeta{Name: "kv", Namespace: kvNamespace},
 				Spec: virtv1.KubeVirtSpec{
@@ -191,7 +202,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				Status: virtv1.KubeVirtStatus{
 					OperatorVersion: "v1.4.1",
 				},
-			}, KubeVirtStorageLiveMigrationNotEnabled),
+			}, KubeVirtStorageLiveMigrationNotEnabledReason),
 			Entry("operator version < 1.5.0 pre-requisites met", &virtv1.KubeVirt{
 				ObjectMeta: metav1.ObjectMeta{Name: "kv", Namespace: kvNamespace},
 				Spec: virtv1.KubeVirtSpec{
@@ -226,7 +237,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				Status: virtv1.KubeVirtStatus{
 					OperatorVersion: "v1.4.1",
 				},
-			}, KubeVirtStorageLiveMigrationNotEnabled),
+			}, KubeVirtStorageLiveMigrationNotEnabledReason),
 			Entry("operator version < 1.5.0 pre-requisites met", &virtv1.KubeVirt{
 				ObjectMeta: metav1.ObjectMeta{Name: "kv", Namespace: kvNamespace},
 				Spec: virtv1.KubeVirtSpec{
@@ -243,7 +254,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				Status: virtv1.KubeVirtStatus{
 					OperatorVersion: "v1.4.1",
 				},
-			}, KubeVirtStorageLiveMigrationNotEnabled),
+			}, KubeVirtStorageLiveMigrationNotEnabledReason),
 			Entry("operator version < 1.5.0 pre-requisites met", &virtv1.KubeVirt{
 				ObjectMeta: metav1.ObjectMeta{Name: "kv", Namespace: kvNamespace},
 				Spec: virtv1.KubeVirtSpec{
@@ -260,7 +271,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				Status: virtv1.KubeVirtStatus{
 					OperatorVersion: "v1.4.1",
 				},
-			}, KubeVirtStorageLiveMigrationNotEnabled),
+			}, KubeVirtStorageLiveMigrationNotEnabledReason),
 		)
 
 		Context("With valid KubeVirt object", func() {
@@ -349,18 +360,18 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 					return &migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
 						Name: ptr.To[string](originalPVCName),
 					}
-				}, InvalidPVCs, "VM test-vm has a destination PVC name for volume test-volume that is the same as the source PVC name"),
+				}, InvalidPVCsType, "VM test-vm has a destination PVC name for volume test-volume that is the same as the source PVC name"),
 				Entry("target pvc storage class is not found", func() *migrations.VirtualMachineStorageMigrationPlanDestinationPVC {
 					return &migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
 						StorageClassName: ptr.To[string]("not-found"),
 					}
-				}, InvalidPVCs, "storage class not-found not found"),
+				}, InvalidPVCsType, "storage class not-found not found"),
 				Entry("target pvc storage class is not found", func() *migrations.VirtualMachineStorageMigrationPlanDestinationPVC {
 					By("deleting default storage class")
 					Expect(reconciler.Client.Delete(ctx, testutils.NewDefaultStorageClass("test-storage-class"))).To(Succeed())
 
 					return &migrations.VirtualMachineStorageMigrationPlanDestinationPVC{}
-				}, InvalidPVCs, "no default storage class found"),
+				}, InvalidPVCsType, "no default storage class found"),
 			)
 
 			DescribeTable("should return an error if the vm is invalid", func(vmDef func() *virtv1.VirtualMachine, expectMessage string) {
@@ -382,7 +393,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				Expect(reconciler.Client.Get(ctx, typeNamespacedName, updated)).NotTo(HaveOccurred())
 				Expect(updated.Status.Conditions.List).To(ContainElement(
 					And(
-						HaveField("Type", StorageMigrationNotPossible),
+						HaveField("Type", StorageMigrationNotPossibleType),
 						HaveField("Status", corev1.ConditionTrue),
 						HaveField("Message", expectMessage),
 					),

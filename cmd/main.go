@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -37,6 +38,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	routev1 "github.com/openshift/api/route/v1"
 	virtv1 "kubevirt.io/api/core/v1"
 	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 
@@ -55,7 +57,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(virtv1.AddToScheme(scheme))
 	utilruntime.Must(cdiv1.AddToScheme(scheme))
-
+	utilruntime.Must(routev1.AddToScheme(scheme))
 	utilruntime.Must(migrations.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
@@ -184,7 +186,10 @@ func main() {
 		})
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	cfg := ctrl.GetConfigOrDie()
+	cfg.WarningHandler = rest.NoWarnings{}
+
+	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
@@ -212,6 +217,7 @@ func main() {
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
 		EventRecorder: mgr.GetEventRecorderFor("storagemigplan-controller"),
+		Log:           ctrl.Log.WithName("storagemigplan-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "StorageMigrationPlan")
 		os.Exit(1)
@@ -220,6 +226,7 @@ func main() {
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
 		EventRecorder: mgr.GetEventRecorderFor("storagemig-controller"),
+		Log:           ctrl.Log.WithName("storagemig-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "StorageMigration")
 		os.Exit(1)

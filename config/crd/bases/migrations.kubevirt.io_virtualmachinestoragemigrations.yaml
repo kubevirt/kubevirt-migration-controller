@@ -15,10 +15,7 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .status.conditions[?(@.type=='Ready')].status
-      name: Ready
-      type: string
-    - jsonPath: .spec.migPlanRef.name
+    - jsonPath: .spec.virtualMachineStorageMigrationPlanRef.name
       name: Plan
       type: string
     - jsonPath: .status.phase
@@ -149,7 +146,14 @@ spec:
                 type: string
               runningMigrations:
                 items:
-                  type: string
+                  properties:
+                    name:
+                      type: string
+                    progress:
+                      type: string
+                  required:
+                  - name
+                  type: object
                 type: array
             type: object
         type: object

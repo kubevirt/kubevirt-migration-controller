@@ -1,0 +1,29 @@
+# This rule is not used by the project kubevirt-migration-controller itself.
+# It is provided to allow the cluster admin to help manage permissions for users.
+#
+# Grants full permissions ('*') over migrations.kubevirt.io.
+# This role is intended for users authorized to modify roles and bindings within the cluster,
+# enabling them to delegate specific permissions to other users or groups as needed.
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: kubevirt-migration-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: migmigration-admin-role
+rules:
+- apiGroups:
+  - migrations.kubevirt.io
+  resources:
+  - virtualmachinestoragemigration
+  verbs:
+  - '*'
+- apiGroups:
+  - migrations.kubevirt.io
+  resources:
+  - virtualmachinestoragemigration/status
+  verbs:
+  - get
+  - update
+  - patch

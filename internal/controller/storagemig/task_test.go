@@ -2,6 +2,7 @@ package storagemig
 
 import (
 	"context"
+	"os"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -220,7 +221,10 @@ var _ = Describe("StorageMigration tasks", func() {
 			Expect(controllerReconciler.Client.Get(ctx, typeNamespacedName, migration)).To(Succeed())
 			Expect(migration.Status.Phase).To(Equal(migrations.WaitForLiveMigrationToComplete))
 			if ready {
-				Expect(migration.Status.RunningMigrations).To(ContainElement(testutils.TestVMName))
+				Expect(migration.Status.RunningMigrations).To(ContainElement(migrations.RunningVirtualMachineMigration{
+					Name:     testutils.TestVMName,
+					Progress: "",
+				}))
 			} else {
 				Expect(migration.Status.RunningMigrations).To(BeEmpty())
 			}
@@ -235,12 +239,22 @@ var _ = Describe("StorageMigration tasks", func() {
 			createValidPlanAndMigration(migrations.WaitForLiveMigrationToComplete)
 			createPVCs()
 			createVM()
+
+			Expect(os.Setenv("CONTROLLER_NAMESPACE", testutils.TestNamespace)).To(Succeed())
+		})
+
+		AfterEach(func() {
+			Expect(os.Unsetenv("CONTROLLER_NAMESPACE")).To(Succeed())
 		})
 
 		It("should properly handle in progress live migration not being completed", func() {
 			migration := &migrations.VirtualMachineStorageMigration{}
 			Expect(controllerReconciler.Client.Get(ctx, typeNamespacedName, migration)).To(Succeed())
-			migration.Status.RunningMigrations = []string{testutils.TestVMName}
+			migration.Status.RunningMigrations = []migrations.RunningVirtualMachineMigration{
+				{
+					Name: testutils.TestVMName,
+				},
+			}
 			Expect(k8sClient.Status().Update(ctx, migration)).To(Succeed())
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -249,7 +263,10 @@ var _ = Describe("StorageMigration tasks", func() {
 			migration = &migrations.VirtualMachineStorageMigration{}
 			Expect(controllerReconciler.Client.Get(ctx, typeNamespacedName, migration)).To(Succeed())
 			Expect(migration.Status.Phase).To(Equal(migrations.WaitForLiveMigrationToComplete))
-			Expect(migration.Status.RunningMigrations).To(ContainElement(testutils.TestVMName))
+			Expect(migration.Status.RunningMigrations).To(ContainElement(migrations.RunningVirtualMachineMigration{
+				Name:     testutils.TestVMName,
+				Progress: "",
+			}))
 			Expect(migration.Status.CompletedMigrations).To(BeEmpty())
 
 			By("creating failed VMIM")
@@ -273,7 +290,10 @@ var _ = Describe("StorageMigration tasks", func() {
 			migration = &migrations.VirtualMachineStorageMigration{}
 			Expect(controllerReconciler.Client.Get(ctx, typeNamespacedName, migration)).To(Succeed())
 			Expect(migration.Status.Phase).To(Equal(migrations.WaitForLiveMigrationToComplete))
-			Expect(migration.Status.RunningMigrations).To(ContainElement(testutils.TestVMName))
+			Expect(migration.Status.RunningMigrations).To(ContainElement(migrations.RunningVirtualMachineMigration{
+				Name:     testutils.TestVMName,
+				Progress: "",
+			}))
 			Expect(migration.Status.CompletedMigrations).To(BeEmpty())
 
 			By("creating completed VMIM")

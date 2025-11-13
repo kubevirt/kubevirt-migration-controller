@@ -14,6 +14,7 @@ import (
 const (
 	ReconcileFailed = "ReconcileFailed"
 	Ready           = "Ready"
+	Progressing     = "Progressing"
 	Running         = "Running"
 	Failed          = "Failed"
 	Succeeded       = "Succeeded"

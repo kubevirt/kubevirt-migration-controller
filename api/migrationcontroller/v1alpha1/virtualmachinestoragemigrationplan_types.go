@@ -81,6 +81,8 @@ type VirtualMachineStorageMigrationPlanDestinationPVC struct {
 
 // MigPlanStatus defines the observed state of MigPlan
 type VirtualMachineStorageMigrationPlanStatus struct {
+	// The number of virtual machines that have been completed out of the total number of virtual machines.
+	CompletedOutOf string `json:"completedOutOf,omitempty"`
 	// Ready migrations are migrations that are ready to be started.
 	ReadyMigrations []VirtualMachineStorageMigrationPlanStatusVirtualMachine `json:"readyMigrations,omitempty"`
 	// Invalid migrations are migrations that are invalid and cannot be started.
@@ -111,7 +113,9 @@ func (r *VirtualMachineStorageMigrationPlan) GetSuffix() string {
 // VirtualMachineStorageMigrationPlan is the Schema for the virtualmachinestoragemigrationplans API
 // +genclient
 // +k8s:openapi-gen=true
-// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].status"
+// +kubebuilder:printcolumn:name="Progressing",type=string,JSONPath=".status.conditions[?(@.type=='Progressing')].status"
+// +kubebuilder:printcolumn:name="Completed VMs",type=string,JSONPath=".status.completedOutOf"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 type VirtualMachineStorageMigrationPlan struct {
 	metav1.TypeMeta   `json:",inline"`
