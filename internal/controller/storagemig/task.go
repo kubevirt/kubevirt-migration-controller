@@ -51,22 +51,22 @@ func (t *Task) Run(ctx context.Context) error {
 	t.init()
 	log := t.Log
 
-	log.Info("Running task.Run", "phase", t.Owner.Status.Phase)
+	log.V(5).Info("Running task.Run", "phase", t.Owner.Status.Phase)
 	// Run the current phase.
 	switch t.Owner.Status.Phase {
 	case migrations.Started:
-		log.Info("Processing Started phase")
+		log.V(5).Info("Processing Started phase")
 		// Set finalizer on migration
 		t.Owner.AddFinalizer(migrations.VirtualMachineStorageMigrationFinalizer, t.Log)
 		t.Owner.Status.Phase = migrations.RefreshStorageMigrationPlan
 	case migrations.RefreshStorageMigrationPlan:
-		log.Info("Processing RefreshStorageMigrationPlan phase")
+		log.V(5).Info("Processing RefreshStorageMigrationPlan phase")
 		if err := t.refreshReadyVirtualMachines(ctx); err != nil {
 			return err
 		}
 		t.Owner.Status.Phase = migrations.WaitForStorageMigrationPlanRefreshCompletion
 	case migrations.WaitForStorageMigrationPlanRefreshCompletion:
-		log.Info("Processing WaitForStorageMigrationPlanRefreshCompletion phase")
+		log.V(5).Info("Processing WaitForStorageMigrationPlanRefreshCompletion phase")
 		if completed, err := t.refreshCompletedVirtualMachines(ctx); err != nil {
 			return err
 		} else if !completed {
@@ -74,7 +74,7 @@ func (t *Task) Run(ctx context.Context) error {
 		}
 		t.Owner.Status.Phase = migrations.BeginLiveMigration
 	case migrations.BeginLiveMigration:
-		log.Info("Processing BeginLiveMigration phase", "readyMigrations", len(t.Plan.Status.ReadyMigrations))
+		log.V(5).Info("Processing BeginLiveMigration phase", "readyMigrations", len(t.Plan.Status.ReadyMigrations))
 		for _, vm := range t.Plan.Status.ReadyMigrations {
 			if can, err := t.canVMStorageMigrate(ctx, vm.Name); err != nil {
 				return err
@@ -92,7 +92,7 @@ func (t *Task) Run(ctx context.Context) error {
 		}
 		t.Owner.Status.Phase = migrations.WaitForLiveMigrationToComplete
 	case migrations.WaitForLiveMigrationToComplete:
-		log.Info("Processing WaitForLiveMigrationToComplete phase", "runningMigrations", len(t.Owner.Status.RunningMigrations))
+		log.V(5).Info("Processing WaitForLiveMigrationToComplete phase", "runningMigrations", len(t.Owner.Status.RunningMigrations))
 		runningMigrations := make([]migrations.RunningVirtualMachineMigration, 0)
 		for _, vm := range t.Owner.Status.RunningMigrations {
 			if ok, err := t.isLiveMigrationCompleted(ctx, vm.Name); err != nil {
@@ -146,7 +146,7 @@ func (t *Task) isLiveMigrationCompleted(ctx context.Context, vmName string) (boo
 	var activeVMIM *virtv1.VirtualMachineInstanceMigration
 	for _, vmim := range vmimList.Items {
 		if vmim.Spec.VMIName == vmName && vmim.Status.Phase != virtv1.MigrationFailed {
-			t.Log.Info("Found active VMIM", "vmim", vmim.Name)
+			t.Log.V(5).Info("Found active VMIM", "vmim", vmim.Name)
 			activeVMIM = &vmim
 			break
 		}
@@ -154,7 +154,7 @@ func (t *Task) isLiveMigrationCompleted(ctx context.Context, vmName string) (boo
 	if activeVMIM == nil {
 		return false, nil
 	}
-	t.Log.Info("is active VMIM completed", "completed", activeVMIM.Status.MigrationState != nil && activeVMIM.Status.MigrationState.Completed && !activeVMIM.Status.MigrationState.Failed)
+	t.Log.V(5).Info("is active VMIM completed", "completed", activeVMIM.Status.MigrationState != nil && activeVMIM.Status.MigrationState.Completed && !activeVMIM.Status.MigrationState.Failed)
 	return activeVMIM.Status.MigrationState != nil && activeVMIM.Status.MigrationState.Completed && !activeVMIM.Status.MigrationState.Failed, nil
 }
 

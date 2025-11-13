@@ -149,7 +149,7 @@ func (r *StorageMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	migrationCopy := migration.DeepCopy()
 	// Apply changes to the status.
 	if !apiequality.Semantic.DeepEqual(migration.Status, origMigration.Status) {
-		log.V(1).Info("Updating VirtualMachineStorageMigration status", "phase", migration.Status.Phase)
+		log.V(5).Info("Updating VirtualMachineStorageMigration status", "phase", migration.Status.Phase)
 		if err := r.Status().Update(context.TODO(), migration); err != nil {
 			return reconcile.Result{}, err
 		}
@@ -158,13 +158,13 @@ func (r *StorageMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// Apply changes to the migration.
 	if !apiequality.Semantic.DeepEqual(migration.ObjectMeta, origMigration.ObjectMeta) {
 		migration.Finalizers = migrationCopy.Finalizers
-		log.V(1).Info("Updating VirtualMachineStorageMigration object metadata", "finalizers", migration.Finalizers)
+		log.V(5).Info("Updating VirtualMachineStorageMigration object metadata", "finalizers", migration.Finalizers)
 		if err := r.Update(context.TODO(), migration); err != nil {
 			return reconcile.Result{}, err
 		}
 	}
 
-	log.V(1).Info("Reconciling VirtualMachineStorageMigration completed")
+	log.V(5).Info("Reconciling VirtualMachineStorageMigration completed")
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
@@ -180,11 +180,11 @@ func (r *StorageMigrationReconciler) setOwnerReference(plan *migrations.VirtualM
 			ref.APIVersion = plan.APIVersion
 			ref.Name = plan.Name
 			ref.UID = plan.UID
-			r.Log.Info("Owner reference already set")
+			r.Log.V(5).Info("Owner reference already set")
 			return
 		}
 	}
-	r.Log.Info("Adding owner reference", "plan metadata", plan.TypeMeta)
+	r.Log.V(5).Info("Adding owner reference", "plan metadata", plan.TypeMeta)
 	migration.OwnerReferences = append(
 		migration.OwnerReferences,
 		metav1.OwnerReference{
@@ -193,7 +193,7 @@ func (r *StorageMigrationReconciler) setOwnerReference(plan *migrations.VirtualM
 			Name:       plan.Name,
 			UID:        plan.UID,
 		})
-	r.Log.Info("migration owner reference", "owner reference", migration.OwnerReferences)
+	r.Log.V(5).Info("migration owner reference", "owner reference", migration.OwnerReferences)
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -230,7 +230,7 @@ func (r *StorageMigrationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	// Watch for changes to MigPlans
 	if err := c.Watch(source.Kind(mgr.GetCache(), &migrations.VirtualMachineStorageMigrationPlan{},
-		handler.TypedEnqueueRequestsFromMapFunc[*migrations.VirtualMachineStorageMigrationPlan, reconcile.Request](r.getMigMigrationsForPlan),
+		handler.TypedEnqueueRequestsFromMapFunc(r.getMigMigrationsForPlan),
 		predicate.TypedFuncs[*migrations.VirtualMachineStorageMigrationPlan]{
 			CreateFunc: func(e event.TypedCreateEvent[*migrations.VirtualMachineStorageMigrationPlan]) bool { return true },
 			DeleteFunc: func(e event.TypedDeleteEvent[*migrations.VirtualMachineStorageMigrationPlan]) bool { return true },
@@ -242,7 +242,7 @@ func (r *StorageMigrationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	// Watch for changes to VirtualMachineInstanceMigrations
 	if err := c.Watch(source.Kind(mgr.GetCache(), &virtv1.VirtualMachineInstanceMigration{},
-		handler.TypedEnqueueRequestsFromMapFunc[*virtv1.VirtualMachineInstanceMigration, reconcile.Request](r.getMigMigrationsForVMIM),
+		handler.TypedEnqueueRequestsFromMapFunc(r.getMigMigrationsForVMIM),
 		predicate.TypedFuncs[*virtv1.VirtualMachineInstanceMigration]{
 			CreateFunc: func(e event.TypedCreateEvent[*virtv1.VirtualMachineInstanceMigration]) bool { return true },
 			DeleteFunc: func(e event.TypedDeleteEvent[*virtv1.VirtualMachineInstanceMigration]) bool { return true },

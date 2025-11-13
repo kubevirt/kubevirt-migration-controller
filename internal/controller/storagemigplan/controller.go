@@ -79,7 +79,7 @@ type StorageMigPlanReconciler struct {
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.4/pkg/reconcile
 func (r *StorageMigPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log
-	log.V(1).Info("Reconciling VirtualMachineStorageMigrationPlan", "name", req.NamespacedName)
+	log.V(5).Info("Reconciling VirtualMachineStorageMigrationPlan", "name", req.NamespacedName)
 	// Fetch the MigPlan instance
 	plan := &migrations.VirtualMachineStorageMigrationPlan{}
 	err := r.Get(context.TODO(), req.NamespacedName, plan)
@@ -117,7 +117,7 @@ func (r *StorageMigPlanReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	planStatusCopy := plan.Status.DeepCopy()
 	if !apiequality.Semantic.DeepEqual(plan.Status, planCopy.Status) {
-		log.V(1).Info("Updating MigPlan status")
+		log.V(5).Info("Updating MigPlan status")
 		if err := r.Status().Update(context.TODO(), plan); err != nil {
 			return reconcile.Result{}, err
 		}

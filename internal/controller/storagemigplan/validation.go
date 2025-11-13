@@ -69,7 +69,6 @@ var (
 
 // Validate the plan resource.
 func (r *StorageMigPlanReconciler) validate(ctx context.Context, plan *migrations.VirtualMachineStorageMigrationPlan) error {
-	r.Log.Info("Validating storage migration plan", "plan", plan.Name)
 	if err := r.validateLiveMigrationPossible(ctx, plan); err != nil {
 		return fmt.Errorf("err checking if live migration is possible: %w", err)
 	}
@@ -81,7 +80,6 @@ func (r *StorageMigPlanReconciler) validateLiveMigrationPossible(ctx context.Con
 	if err := r.validateKubeVirtInstalled(ctx, plan); err != nil {
 		return err
 	}
-	r.Log.Info("mig plan status", "conditions", plan.Status.Conditions)
 	if plan.Status.HasAnyCondition(StorageMigrationNotPossibleType) {
 		r.Log.Info("KubeVirt is not installed, version is not supported, or storage live migration is not enabled, skipping storage migration possible validation")
 		return nil
@@ -125,7 +123,6 @@ func (r *StorageMigPlanReconciler) validateStorageMigrationPossible(ctx context.
 		}
 	}
 	// Validate the PVCs are valid
-	r.Log.Info("validating PVCs", "migrations", plan.Status.ReadyMigrations)
 	if reason, message, err := r.validatePVCs(ctx, plan); err != nil {
 		return err
 	} else if message != "" {
@@ -269,7 +266,6 @@ func (r *StorageMigPlanReconciler) validatePVCs(ctx context.Context, plan *migra
 	invalidMigrations := make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, 0)
 	lastReason := ""
 	lastMessage := ""
-	r.Log.Info("validating PVCs", "number of ready migrations", len(plan.Status.ReadyMigrations))
 	for _, vm := range plan.Status.ReadyMigrations {
 		issueFound := false
 		for i, pvc := range vm.TargetMigrationPVCs {
@@ -297,7 +293,6 @@ func (r *StorageMigPlanReconciler) validatePVCs(ctx context.Context, plan *migra
 					break
 				}
 			}
-			r.Log.Info("validating PVC", "pvc", vm.TargetMigrationPVCs[i].DestinationPVC.Name, "sourcePVC", vm.SourcePVCs[i].Name, "isMigrating", r.isVMMigrating(ctx, plan))
 			if vm.TargetMigrationPVCs[i].DestinationPVC.Name != nil && *vm.TargetMigrationPVCs[i].DestinationPVC.Name == vm.SourcePVCs[i].Name && !r.isVMMigrating(ctx, plan) {
 				lastReason = migrations.Conflict
 				lastMessage = fmt.Sprintf("VM %s has a destination PVC name for volume %s that is the same as the source PVC name", vm.Name, vm.TargetMigrationPVCs[i].VolumeName)
@@ -330,7 +325,6 @@ func (r *StorageMigPlanReconciler) isVMMigrating(ctx context.Context, plan *migr
 			(storageMigration.Status.Phase == migrations.WaitForLiveMigrationToComplete ||
 				storageMigration.Status.Phase == migrations.CleanupMigrationResources ||
 				storageMigration.Status.Phase == migrations.Completed) {
-			r.Log.Info("VM is migrating", "vm", plan.Name)
 			return true
 		}
 	}
@@ -409,7 +403,7 @@ func (r *StorageMigPlanReconciler) validateKubeVirtInstalled(ctx context.Context
 	log.V(3).Info("KubeVirt operator version", "major", major, "minor", minor, "bugfix", bugfix)
 	// Check if kubevirt operator version is at least 1.3.0 if live migration is enabled.
 	if major < 1 || (major == 1 && minor < 3) {
-		log.Info("KubeVirt operator version is not supported", "version", operatorVersion)
+		log.V(3).Info("KubeVirt operator version is not supported", "version", operatorVersion)
 		plan.Status.SetCondition(migrations.Condition{
 			Type:     StorageMigrationNotPossibleType,
 			Status:   corev1.ConditionTrue,

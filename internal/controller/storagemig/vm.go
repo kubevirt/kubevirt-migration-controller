@@ -226,11 +226,11 @@ func (t *Task) refreshReadyVirtualMachines(ctx context.Context) error {
 	}
 	planCopy.Annotations[storagemigplan.RefreshStartTimeAnnotation] = time.Now().Format(time.RFC3339Nano)
 	delete(planCopy.Annotations, storagemigplan.RefreshEndTimeAnnotation)
-	t.Log.V(1).Info("new plan annotations", "annotations", planCopy.Annotations)
+	t.Log.V(5).Info("new plan annotations", "annotations", planCopy.Annotations)
 	if err := t.Client.Patch(ctx, planCopy, client.MergeFrom(plan)); err != nil {
 		return err
 	}
-	t.Log.V(1).Info("refreshed plan annotations", "annotations", planCopy.Annotations)
+	t.Log.V(5).Info("refreshed plan annotations", "annotations", planCopy.Annotations)
 	return nil
 }
 
@@ -244,13 +244,13 @@ func (t *Task) refreshCompletedVirtualMachines(ctx context.Context) (bool, error
 	if startTimeString, ok := plan.Annotations[storagemigplan.RefreshStartTimeAnnotation]; !ok {
 		return false, fmt.Errorf("refresh start time not found")
 	} else {
-		log.Info("startTime", "startTime", startTimeString)
+		log.V(5).Info("refresh start time", "startTime", startTimeString)
 		if startTime, err = time.Parse(time.RFC3339Nano, startTimeString); err != nil {
 			return false, err
 		}
 	}
 	if endTime, ok := plan.Annotations[storagemigplan.RefreshEndTimeAnnotation]; ok {
-		log.Info("endTime", "endTime", endTime)
+		log.V(5).Info("refresh end time", "endTime", endTime)
 		if endTime, err := time.Parse(time.RFC3339Nano, endTime); err != nil {
 			return false, err
 		} else {
