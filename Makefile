@@ -190,7 +190,7 @@ buildah-manifest-clean: ## Clean the manifest for the image using buildah.
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
 	mkdir -p dist
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	cd config/controller && $(KUSTOMIZE) edit set image controller=${IMG}
 	$(KUSTOMIZE) build config/$(DEPLOYMENT_TARGET) > dist/install.yaml
 
 ##@ Deployment
@@ -210,7 +210,7 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
 	@echo "Deploying controller to the K8s cluster specified in ~/.kube/config. MANIFEST_IMG: ${MANIFEST_IMG}"
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${MANIFEST_IMG}
+	cd config/controller && $(KUSTOMIZE) edit set image controller=${MANIFEST_IMG}
 	$(KUSTOMIZE) build config/$(DEPLOYMENT_TARGET) | $(KUBECTL) apply -f -
 
 .PHONY: undeploy
@@ -330,7 +330,7 @@ endif
 .PHONY: bundle
 bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metadata, then validate generated files.
 	$(OPERATOR_SDK) generate kustomize manifests -q
-	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
+	cd config/controller && $(KUSTOMIZE) edit set image controller=$(IMG)
 	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
 	$(OPERATOR_SDK) bundle validate ./bundle
 

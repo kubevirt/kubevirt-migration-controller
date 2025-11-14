@@ -98,8 +98,10 @@ func (r *StorageMigPlanReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	if plan.Status.HasCriticalCondition() {
 		plan.Status.SetCondition(readyCondition(corev1.ConditionFalse, "plan has one or more critical conditions"))
-	} else {
+	} else if len(plan.Status.ReadyMigrations) > 0 {
 		plan.Status.SetCondition(readyCondition(corev1.ConditionTrue, "plan is ready"))
+	} else {
+		plan.Status.SetCondition(readyCondition(corev1.ConditionFalse, "no virtual machines are ready for storage migration"))
 	}
 	// Update the ready/completed migrations based on the status of the storage migrations
 	if err := r.processMigrations(ctx, plan); err != nil {

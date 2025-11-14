@@ -180,7 +180,7 @@ func (t *Task) updateVMForStorageMigration(ctx context.Context, vm *virtv1.Virtu
 
 	vmCopy := vm.DeepCopy()
 	// Ensure the VM migration strategy is set properly.
-	vmCopy.Spec.UpdateVolumesStrategy = ptr.To[virtv1.UpdateVolumesStrategy](virtv1.UpdateVolumesStrategyMigration)
+	vmCopy.Spec.UpdateVolumesStrategy = ptr.To(virtv1.UpdateVolumesStrategyMigration)
 
 	// Update the VM to use the new PVCs.
 	for i, volume := range vm.Spec.Template.Spec.Volumes {
@@ -196,7 +196,7 @@ func (t *Task) updateVMForStorageMigration(ctx context.Context, vm *virtv1.Virtu
 
 	planPVCNameMap := make(map[string]string)
 	for _, pvc := range planVM.SourcePVCs {
-		planPVCNameMap[pvc.SourcePVC.Name] = pvc.VolumeName
+		planPVCNameMap[pvc.Name] = pvc.VolumeName
 	}
 	// Update the DataVolumeTemplates to match the new PVCs.
 	for i, dvTemplate := range vmCopy.Spec.DataVolumeTemplates {
