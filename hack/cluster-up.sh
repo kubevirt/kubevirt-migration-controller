@@ -8,7 +8,8 @@ source ./cluster-up/hack/common.sh
 source ./cluster-up/cluster/${KUBEVIRT_PROVIDER}/provider.sh
 
 # Point at latest KubeVirt release
-export KV_RELEASE=v1.5.2
+export KV_RELEASE=${KV_RELEASE:-v1.6.1}
+
 # Deploy the KubeVirt operator
 _kubectl apply -f https://github.com/kubevirt/kubevirt/releases/download/${KV_RELEASE}/kubevirt-operator.yaml
 # Create the KubeVirt CR (instance deployment request) which triggers the actual installation

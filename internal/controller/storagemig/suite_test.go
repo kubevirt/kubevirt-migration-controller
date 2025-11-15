@@ -53,7 +53,7 @@ var (
 func TestControllers(t *testing.T) {
 	RegisterFailHandler(Fail)
 
-	RunSpecs(t, "Controller Suite")
+	RunSpecs(t, "Storage Migration Controller Suite")
 }
 
 var _ = BeforeSuite(func() {
@@ -88,7 +88,6 @@ var _ = BeforeSuite(func() {
 
 	testutils.CreateKubeVirtNamespace(ctx, k8sClient, kvNamespace)
 	testutils.CreateMigPlanNamespace(ctx, k8sClient, testutils.TestNamespace)
-
 })
 
 var _ = AfterSuite(func() {
