@@ -31,7 +31,6 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/client-go/rest"
-	ctrl "sigs.k8s.io/controller-runtime"
 	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -69,7 +68,6 @@ func (t *Task) buildPrometheusAPI(ctx context.Context) error {
 	if t.PrometheusAPI != nil {
 		return nil
 	}
-	restConfig := ctrl.GetConfigOrDie()
 	url, err := t.buildSourcePrometheusEndPointURL(ctx)
 	if err != nil {
 		return err
@@ -79,7 +77,7 @@ func (t *Task) buildPrometheusAPI(ctx context.Context) error {
 	if url == "" {
 		return nil
 	}
-	httpClient, err := rest.HTTPClientFor(restConfig)
+	httpClient, err := rest.HTTPClientFor(t.Config)
 	if err != nil {
 		return err
 	}

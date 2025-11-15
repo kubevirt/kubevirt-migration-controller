@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/record"
 	virtv1 "kubevirt.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -53,7 +54,8 @@ type StorageMigrationReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	record.EventRecorder
-	Log logr.Logger
+	Log    logr.Logger
+	Config *rest.Config
 }
 
 // +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=virtualmachinestoragemigrations,verbs=get;list;watch;create;update;patch;delete
@@ -203,6 +205,7 @@ func (r *StorageMigrationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err != nil {
 		return err
 	}
+	r.Config = mgr.GetConfig()
 
 	// Watch for changes to MigMigration
 	if err := c.Watch(source.Kind(mgr.GetCache(), &migrations.VirtualMachineStorageMigration{},

@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
 	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
@@ -27,6 +28,7 @@ const (
 )
 
 type Task struct {
+	Config        *rest.Config
 	Scheme        *runtime.Scheme
 	Log           logr.Logger
 	Client        k8sclient.Client

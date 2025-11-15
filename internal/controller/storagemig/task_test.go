@@ -34,6 +34,7 @@ var _ = Describe("StorageMigration tasks", func() {
 		controllerReconciler = &StorageMigrationReconciler{
 			Client: k8sClient,
 			Scheme: k8sClient.Scheme(),
+			Config: cfg,
 		}
 	})
 

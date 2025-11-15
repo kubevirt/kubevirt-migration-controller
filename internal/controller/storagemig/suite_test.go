@@ -26,6 +26,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -48,12 +49,13 @@ var (
 	cancel    context.CancelFunc
 	testEnv   *envtest.Environment
 	k8sClient client.Client
+	cfg       *rest.Config
 )
 
 func TestControllers(t *testing.T) {
 	RegisterFailHandler(Fail)
 
-	RunSpecs(t, "Controller Suite")
+	RunSpecs(t, "Storage Migration Controller Suite")
 }
 
 var _ = BeforeSuite(func() {
@@ -78,7 +80,8 @@ var _ = BeforeSuite(func() {
 		testEnv.BinaryAssetsDirectory = dir
 	}
 
-	cfg, err := testEnv.Start()
+	var err error
+	cfg, err = testEnv.Start()
 	Expect(err).NotTo(HaveOccurred())
 	Expect(cfg).NotTo(BeNil())
 
@@ -88,7 +91,6 @@ var _ = BeforeSuite(func() {
 
 	testutils.CreateKubeVirtNamespace(ctx, k8sClient, kvNamespace)
 	testutils.CreateMigPlanNamespace(ctx, k8sClient, testutils.TestNamespace)
-
 })
 
 var _ = AfterSuite(func() {
@@ -109,7 +111,9 @@ var _ = AfterSuite(func() {
 // setting the 'KUBEBUILDER_ASSETS' environment variable. To ensure the binaries are
 // properly set up, run 'make setup-envtest' beforehand.
 func getFirstFoundEnvTestBinaryDir() string {
-	basePath := filepath.Join("..", "..", "bin", "k8s")
+	wd, err := os.Getwd()
+	Expect(err).NotTo(HaveOccurred())
+	basePath := filepath.Join(wd, "..", "..", "..", "bin", "k8s")
 	entries, err := os.ReadDir(basePath)
 	if err != nil {
 		logf.Log.Error(err, "Failed to read directory", "path", basePath)
