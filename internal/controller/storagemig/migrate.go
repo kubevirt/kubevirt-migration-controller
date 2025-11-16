@@ -32,6 +32,7 @@ func (r *StorageMigrationReconciler) migrate(ctx context.Context, plan *migratio
 		Owner:  migration,
 		Plan:   plan,
 		Log:    log,
+		Config: r.Config,
 	}
 
 	log.V(5).Info("Calling task.Run")

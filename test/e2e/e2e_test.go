@@ -17,21 +17,23 @@ limitations under the License.
 package e2e
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"kubevirt.io/kubevirt-migration-controller/test/utils"
 )
-
-// namespace where the project is deployed in
-const namespace = "kubevirt-migration-system"
 
 // serviceAccountName created for the project
 const serviceAccountName = "kubevirt-migration-controller"
@@ -50,7 +52,7 @@ var _ = Describe("Manager", Ordered, func() {
 	// and deploying the controller.
 	BeforeAll(func() {
 		By("labeling the namespace to enforce the restricted security policy")
-		cmd := exec.Command(*kubectlPath, "label", "--overwrite", "ns", namespace,
+		cmd := exec.Command(*kubectlPath, "label", "--overwrite", "ns", *migrationControllerNamespace,
 			"pod-security.kubernetes.io/enforce=restricted")
 		_, err := utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
@@ -60,7 +62,7 @@ var _ = Describe("Manager", Ordered, func() {
 	// and deleting the namespace.
 	AfterAll(func() {
 		By("cleaning up the curl pod for metrics")
-		cmd := exec.Command(*kubectlPath, "delete", "pod", "curl-metrics", "-n", namespace)
+		cmd := exec.Command(*kubectlPath, "delete", "pod", "curl-metrics", "-n", *migrationControllerNamespace)
 		_, _ = utils.Run(cmd)
 	})
 
@@ -70,7 +72,7 @@ var _ = Describe("Manager", Ordered, func() {
 		specReport := CurrentSpecReport()
 		if specReport.Failed() {
 			By("Fetching controller pod logs")
-			cmd := exec.Command(*kubectlPath, "logs", controllerPodName, "-n", namespace)
+			cmd := exec.Command(*kubectlPath, "logs", controllerPodName, "-n", *migrationControllerNamespace)
 			controllerLogs, err := utils.Run(cmd)
 			if err == nil {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", controllerLogs)
@@ -79,7 +81,7 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 
 			By("Fetching Kubernetes events")
-			cmd = exec.Command(*kubectlPath, "get", "events", "-n", namespace, "--sort-by=.lastTimestamp")
+			cmd = exec.Command(*kubectlPath, "get", "events", "-n", *migrationControllerNamespace, "--sort-by=.lastTimestamp")
 			eventsOutput, err := utils.Run(cmd)
 			if err == nil {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Kubernetes events:\n%s", eventsOutput)
@@ -88,7 +90,7 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 
 			By("Fetching curl-metrics logs")
-			cmd = exec.Command(*kubectlPath, "logs", "curl-metrics", "-n", namespace)
+			cmd = exec.Command(*kubectlPath, "logs", "curl-metrics", "-n", *migrationControllerNamespace)
 			metricsOutput, err := utils.Run(cmd)
 			if err == nil {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Metrics logs:\n %s", metricsOutput)
@@ -97,7 +99,7 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 
 			By("Fetching controller pod description")
-			cmd = exec.Command(*kubectlPath, "describe", "pod", controllerPodName, "-n", namespace)
+			cmd = exec.Command(*kubectlPath, "describe", "pod", controllerPodName, "-n", *migrationControllerNamespace)
 			podDescription, err := utils.Run(cmd)
 			if err == nil {
 				fmt.Println("Pod description:\n", podDescription)
@@ -114,31 +116,16 @@ var _ = Describe("Manager", Ordered, func() {
 		It("should run successfully", func() {
 			By("validating that the controller pod is running as expected")
 			verifyControllerUp := func(g Gomega) {
-				// Get the name of the controller pod
-				cmd := exec.Command(*kubectlPath, "get",
-					"pods", "-l", "control-plane=controller",
-					"-o", "go-template={{ range .items }}"+
-						"{{ if not .metadata.deletionTimestamp }}"+
-						"{{ .metadata.name }}"+
-						"{{ \"\\n\" }}{{ end }}{{ end }}",
-					"-n", namespace,
-				)
-
-				podOutput, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve controller pod information")
-				podNames := utils.GetNonEmptyLines(podOutput)
-				g.Expect(podNames).To(HaveLen(1), "expected 1 controller pod running")
-				controllerPodName = podNames[0]
-				g.Expect(controllerPodName).To(ContainSubstring("controller"))
+				pods, err := kcs.CoreV1().Pods(*migrationControllerNamespace).List(context.TODO(), metav1.ListOptions{
+					LabelSelector: "control-plane=controller",
+				})
+				Expect(err).NotTo(HaveOccurred(), "Failed to list controller pods")
+				Expect(pods.Items).To(HaveLen(1), "expected 1 controller pod running")
+				controllerPodName = pods.Items[0].Name
+				Expect(controllerPodName).To(ContainSubstring("controller"))
 
 				// Validate the pod's status
-				cmd = exec.Command(*kubectlPath, "get",
-					"pods", controllerPodName, "-o", "jsonpath={.status.phase}",
-					"-n", namespace,
-				)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("Running"), "Incorrect controller pod status")
+				g.Expect(pods.Items[0].Status.Phase).To(Equal(corev1.PodRunning), "Incorrect controller pod status")
 			}
 			Eventually(verifyControllerUp).Should(Succeed())
 		})
@@ -147,7 +134,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
 			cmd := exec.Command(*kubectlPath, "create", "clusterrolebinding", metricsRoleBindingName,
 				"--clusterrole=kubevirt-migration-metrics-reader",
-				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
+				fmt.Sprintf("--serviceaccount=%s:%s", *migrationControllerNamespace, serviceAccountName),
 			)
 			_, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create ClusterRoleBinding")
@@ -159,7 +146,7 @@ var _ = Describe("Manager", Ordered, func() {
 			})
 
 			By("validating that the metrics service is available")
-			cmd = exec.Command(*kubectlPath, "get", "service", metricsServiceName, "-n", namespace)
+			cmd = exec.Command(*kubectlPath, "get", "service", metricsServiceName, "-n", *migrationControllerNamespace)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Metrics service should exist")
 
@@ -170,7 +157,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("waiting for the metrics endpoint to be ready")
 			verifyMetricsEndpointReady := func(g Gomega) {
-				cmd := exec.Command(*kubectlPath, "get", "endpoints", metricsServiceName, "-n", namespace)
+				cmd := exec.Command(*kubectlPath, "get", "endpoints", metricsServiceName, "-n", *migrationControllerNamespace)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("8443"), "Metrics endpoint is not ready")
@@ -179,7 +166,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("verifying that the controller is serving the metrics server")
 			verifyMetricsServerStarted := func(g Gomega) {
-				cmd := exec.Command(*kubectlPath, "logs", controllerPodName, "-n", namespace)
+				cmd := exec.Command(*kubectlPath, "logs", controllerPodName, "-n", *migrationControllerNamespace)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("controller-runtime.metrics\tServing metrics server"),
@@ -189,7 +176,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("creating the curl-metrics pod to access the metrics endpoint")
 			cmd = exec.Command(*kubectlPath, "run", "curl-metrics", "--restart=Never",
-				"--namespace", namespace,
+				"--namespace", *migrationControllerNamespace,
 				"--image=curlimages/curl:latest",
 				"--overrides",
 				fmt.Sprintf(`{
@@ -213,7 +200,7 @@ var _ = Describe("Manager", Ordered, func() {
 						}],
 						"serviceAccount": "%s"
 					}
-				}`, token, metricsServiceName, namespace, serviceAccountName))
+				}`, token, metricsServiceName, *migrationControllerNamespace, serviceAccountName))
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create curl-metrics pod")
 
@@ -221,8 +208,9 @@ var _ = Describe("Manager", Ordered, func() {
 			verifyCurlUp := func(g Gomega) {
 				cmd := exec.Command(*kubectlPath, "get", "pods", "curl-metrics",
 					"-o", "jsonpath={.status.phase}",
-					"-n", namespace)
+					"-n", *migrationControllerNamespace)
 				output, err := utils.Run(cmd)
+				output = strings.TrimPrefix(output, "selecting podman as container runtime\n")
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(Equal("Succeeded"), "curl pod in wrong status")
 			}
@@ -270,12 +258,16 @@ func serviceAccountToken() (string, error) {
 		// Execute kubectl command to create the token
 		cmd := exec.Command(*kubectlPath, "create", "--raw", fmt.Sprintf(
 			"/api/v1/namespaces/%s/serviceaccounts/%s/token",
-			namespace,
+			*migrationControllerNamespace,
 			serviceAccountName,
 		), "-f", tokenRequestFile)
 
 		output, err := cmd.CombinedOutput()
 		g.Expect(err).NotTo(HaveOccurred())
+
+		output, found := bytes.CutPrefix(output, []byte("selecting podman as container runtime\n"))
+		Expect(found).To(BeTrue())
+		By(fmt.Sprintf("output: [%s]", string(output)))
 
 		// Parse the JSON output to extract the token
 		var token tokenRequest
@@ -292,7 +284,7 @@ func serviceAccountToken() (string, error) {
 // getMetricsOutput retrieves and returns the logs from the curl pod used to access the metrics endpoint.
 func getMetricsOutput() string {
 	By("getting the curl-metrics logs")
-	cmd := exec.Command(*kubectlPath, "logs", "curl-metrics", "-n", namespace)
+	cmd := exec.Command(*kubectlPath, "logs", "curl-metrics", "-n", *migrationControllerNamespace)
 	metricsOutput, err := utils.Run(cmd)
 	Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
 	fmt.Println("metricsOutput: ", metricsOutput)

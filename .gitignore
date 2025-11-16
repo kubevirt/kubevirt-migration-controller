@@ -31,3 +31,6 @@ config/manager/kustomization.yaml
 
 # kubevirtci
 _ci-configs/*
+
+# ci artifacts
+_artifacts

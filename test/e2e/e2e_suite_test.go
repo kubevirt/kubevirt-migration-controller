@@ -33,11 +33,13 @@ import (
 )
 
 var (
-	kubectlPath = flag.String("kubectl-path", "kubectl", "Path to the kubectl binary")
-	kubeConfig  = flag.String("test-kubeconfig", "", "Path to the kubeconfig file")
-	kubeURL     = flag.String("kubeurl", "", "URL of the kube API server")
-	kcs         *kubernetes.Clientset
-	mcs         *migrationclientset.Clientset
+	kubectlPath                  = flag.String("kubectl-path", "kubectl", "Path to the kubectl binary")
+	kubeConfig                   = flag.String("test-kubeconfig", "", "Path to the kubeconfig file")
+	migrationControllerNamespace = flag.String("migration-controller-namespace", "kubevirt-migration-system",
+		"Namespace of the migration controller")
+	kubeURL = flag.String("kubeurl", "", "URL of the kube API server")
+	kcs     *kubernetes.Clientset
+	mcs     *migrationclientset.Clientset
 )
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
@@ -67,6 +69,9 @@ func BuildTestSuite() {
 		Expect(err).ToNot(HaveOccurred(), "Unable to write to GinkgoWriter")
 
 		_, err = fmt.Fprintf(GinkgoWriter, "KubeURL: %s\n", *kubeURL)
+		Expect(err).ToNot(HaveOccurred(), "Unable to write to GinkgoWriter")
+
+		_, err = fmt.Fprintf(GinkgoWriter, "Migration controller namespace: %s\n", *migrationControllerNamespace)
 		Expect(err).ToNot(HaveOccurred(), "Unable to write to GinkgoWriter")
 
 		restConfig, err := LoadConfig()

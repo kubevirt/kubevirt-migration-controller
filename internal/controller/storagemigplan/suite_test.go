@@ -25,7 +25,9 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	routev1 "github.com/openshift/api/route/v1"
 	"k8s.io/client-go/kubernetes/scheme"
+	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -54,7 +56,7 @@ const (
 func TestControllers(t *testing.T) {
 	RegisterFailHandler(Fail)
 
-	RunSpecs(t, "Controller Suite")
+	RunSpecs(t, "Storage Migration Plan Controller Suite")
 }
 
 var _ = BeforeSuite(func() {
@@ -64,7 +66,8 @@ var _ = BeforeSuite(func() {
 
 	Expect(migrations.AddToScheme(scheme.Scheme)).NotTo(HaveOccurred())
 	Expect(virtv1.AddToScheme(scheme.Scheme)).NotTo(HaveOccurred())
-
+	Expect(cdiv1.AddToScheme(scheme.Scheme)).NotTo(HaveOccurred())
+	Expect(routev1.AddToScheme(scheme.Scheme)).NotTo(HaveOccurred())
 	// +kubebuilder:scaffold:scheme
 
 	By("bootstrapping test environment")
@@ -108,7 +111,9 @@ var _ = AfterSuite(func() {
 // setting the 'KUBEBUILDER_ASSETS' environment variable. To ensure the binaries are
 // properly set up, run 'make setup-envtest' beforehand.
 func getFirstFoundEnvTestBinaryDir() string {
-	basePath := filepath.Join("..", "..", "bin", "k8s")
+	wd, err := os.Getwd()
+	Expect(err).NotTo(HaveOccurred())
+	basePath := filepath.Join(wd, "..", "..", "..", "bin", "k8s")
 	entries, err := os.ReadDir(basePath)
 	if err != nil {
 		logf.Log.Error(err, "Failed to read directory", "path", basePath)
