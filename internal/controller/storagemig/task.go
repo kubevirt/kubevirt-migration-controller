@@ -118,11 +118,14 @@ func (t *Task) Run(ctx context.Context) error {
 		}
 		t.Requeue = PollReQ
 	case migrations.CleanupMigrationResources:
-		if err := t.cleanupMigrationResources(ctx); err != nil {
+		if allCleaned, err := t.cleanupMigrationResources(ctx, t.Owner.Status.CompletedMigrations); err != nil {
 			return err
+		} else if !allCleaned {
+			t.Requeue = PollReQ
+		} else {
+			t.Owner.RemoveFinalizer(migrations.VirtualMachineStorageMigrationFinalizer, t.Log)
+			t.Owner.Status.Phase = migrations.Completed
 		}
-		t.Owner.RemoveFinalizer(migrations.VirtualMachineStorageMigrationFinalizer, t.Log)
-		t.Owner.Status.Phase = migrations.Completed
 	case migrations.Canceled:
 		t.Owner.Status.DeleteCondition(string(migrations.Canceling))
 		t.Owner.Status.SetCondition(migrations.Condition{
@@ -160,15 +163,34 @@ func (t *Task) isLiveMigrationCompleted(ctx context.Context, vmName string) (boo
 	return activeVMIM.Status.MigrationState != nil && activeVMIM.Status.MigrationState.Completed && !activeVMIM.Status.MigrationState.Failed, nil
 }
 
-func (t *Task) cleanupMigrationResources(ctx context.Context) error {
-	podList := &corev1.PodList{}
-	labelSelector := map[string]string{virtLauncherPodLabelSelectorKey: virtLauncherPodLabelSelectorValue}
-	if err := t.Client.List(ctx, podList, k8sclient.InNamespace(t.Owner.Namespace), k8sclient.MatchingLabels(labelSelector)); err != nil {
+func (t *Task) cleanupMigrationResources(ctx context.Context, completedMigrationsVMNames []string) (allCleaned bool, err error) {
+	if allCleaned, err := t.cleanupCompletedPods(ctx, completedMigrationsVMNames); err != nil {
+		return false, err
+	} else if !allCleaned {
+		return false, nil
+	}
+	if err := t.cleanupCompletedVMIMs(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (t *Task) cleanupCompletedVMIMs(ctx context.Context) error {
+	vmimList := &virtv1.VirtualMachineInstanceMigrationList{}
+	if err := t.Client.List(ctx, vmimList, k8sclient.InNamespace(t.Owner.Namespace)); err != nil {
 		return err
 	}
-	for _, pod := range podList.Items {
-		if pod.Status.Phase == corev1.PodSucceeded {
-			if err := t.Client.Delete(ctx, &pod); err != nil {
+
+	completedMigrations := make(map[string]struct{})
+	for _, migration := range t.Owner.Status.CompletedMigrations {
+		completedMigrations[migration] = struct{}{}
+	}
+	for _, vmim := range vmimList.Items {
+		t.Log.Info("Checking if VMIM is completed", "vmim", vmim.Name, "phase", vmim.Status.Phase)
+		_, ok := completedMigrations[vmim.Spec.VMIName]
+		if vmim.Status.Phase == virtv1.MigrationSucceeded && ok {
+			t.Log.Info("Cleaning up migration resource", "vmim", vmim.Name)
+			if err := t.Client.Delete(ctx, &vmim); err != nil {
 				if !k8serrors.IsNotFound(err) {
 					return err
 				}
@@ -176,6 +198,39 @@ func (t *Task) cleanupMigrationResources(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (t *Task) cleanupCompletedPods(ctx context.Context, completedMigrationsVMNames []string) (allCleaned bool, err error) {
+	podList := &corev1.PodList{}
+	labelSelector := map[string]string{virtLauncherPodLabelSelectorKey: virtLauncherPodLabelSelectorValue}
+	if err := t.Client.List(ctx, podList, k8sclient.InNamespace(t.Owner.Namespace), k8sclient.MatchingLabels(labelSelector)); err != nil {
+		return false, err
+	}
+	for _, pod := range podList.Items {
+		t.Log.Info("Checking if pod is completed", "pod", pod.Name, "phase", pod.Status.Phase)
+		if pod.Status.Phase == corev1.PodSucceeded {
+			t.Log.Info("Cleaning up migration resource", "pod", pod.Name)
+			if err := t.Client.Delete(ctx, &pod); err != nil {
+				if !k8serrors.IsNotFound(err) {
+					return false, err
+				}
+			}
+		}
+	}
+	for _, completedMigrationVMName := range completedMigrationsVMNames {
+		vmi := &virtv1.VirtualMachineInstance{}
+		if err := t.Client.Get(ctx, k8sclient.ObjectKey{Namespace: t.Owner.Namespace, Name: completedMigrationVMName}, vmi); err != nil {
+			if !k8serrors.IsNotFound(err) {
+				continue
+			}
+			return false, err
+		}
+		if len(vmi.Status.ActivePods) > 1 {
+			// Not all pods are cleaned up, so we need to requeue.
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // Initialize.

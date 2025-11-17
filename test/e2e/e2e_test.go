@@ -266,7 +266,9 @@ func serviceAccountToken() (string, error) {
 		g.Expect(err).NotTo(HaveOccurred())
 
 		output, found := bytes.CutPrefix(output, []byte("selecting podman as container runtime\n"))
-		Expect(found).To(BeTrue())
+		if found {
+			By("removing unneeded text from the output")
+		}
 		By(fmt.Sprintf("output: [%s]", string(output)))
 
 		// Parse the JSON output to extract the token

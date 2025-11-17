@@ -4,6 +4,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	virtv1 "kubevirt.io/api/core/v1"
 	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
@@ -18,6 +19,7 @@ const (
 	TestVMName        = "test-vm"
 	TestVMIMName      = "test-vmim"
 	TestVolumeName    = "test-volume"
+	TestNodeName      = "test-node"
 )
 
 func NewVirtualMachineStorageMigrationPlan(name string) *migrations.VirtualMachineStorageMigrationPlan {
@@ -79,6 +81,21 @@ func NewVirtualMachine(name, namespace, volumeName, pvcName string) *virtv1.Virt
 					Type:   componenthelpers.StorageLiveMigratable,
 					Status: corev1.ConditionTrue,
 				},
+			},
+		},
+	}
+}
+
+func NewVirtualMachineInstance(name, namespace string, podUID types.UID, nodeName string) *virtv1.VirtualMachineInstance {
+	return &virtv1.VirtualMachineInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: virtv1.VirtualMachineInstanceSpec{},
+		Status: virtv1.VirtualMachineInstanceStatus{
+			ActivePods: map[types.UID]string{
+				podUID: nodeName,
 			},
 		},
 	}

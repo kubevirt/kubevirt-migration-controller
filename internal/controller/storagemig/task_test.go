@@ -195,11 +195,17 @@ var _ = Describe("StorageMigration tasks", func() {
 		Expect(k8sClient.Create(ctx, vm)).To(Succeed())
 	}
 
+	createVMI := func() {
+		vmi := testutils.NewVirtualMachineInstance(testutils.TestVMName, testutils.TestNamespace, types.UID("1111-1111"), testutils.TestNodeName)
+		Expect(k8sClient.Create(ctx, vmi)).To(Succeed())
+	}
+
 	Context("when the phase is BeginLiveMigration", func() {
 		BeforeEach(func() {
 			createValidPlanAndMigration(migrations.BeginLiveMigration)
 			createPVCs()
 			createVM()
+			createVMI()
 		})
 
 		DescribeTable("should properly handle live migration when the phase is BeginLiveMigration", func(ready bool) {
@@ -326,6 +332,7 @@ var _ = Describe("StorageMigration tasks", func() {
 			createValidPlanAndMigration(migrations.CleanupMigrationResources)
 			createPVCs()
 			createVM()
+			createVMI()
 		})
 
 		completeMigration := func() {

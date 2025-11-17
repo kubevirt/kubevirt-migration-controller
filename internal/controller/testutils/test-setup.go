@@ -55,6 +55,16 @@ func cleanupKubeVirt(ctx context.Context, client client.Client) {
 	for _, vm := range vmList.Items {
 		Expect(client.Delete(ctx, &vm)).To(Succeed())
 	}
+	vmiList := &virtv1.VirtualMachineInstanceList{}
+	Expect(client.List(ctx, vmiList)).To(Succeed())
+	for _, vmi := range vmiList.Items {
+		Expect(client.Delete(ctx, &vmi)).To(Succeed())
+	}
+	podList := &corev1.PodList{}
+	Expect(client.List(ctx, podList)).To(Succeed())
+	for _, pod := range podList.Items {
+		Expect(client.Delete(ctx, &pod)).To(Succeed())
+	}
 }
 
 func cleanupVirtualMachineStorageMigrationPlan(ctx context.Context, client client.Client) {
