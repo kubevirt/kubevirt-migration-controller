@@ -46,7 +46,7 @@ var _ = Describe("StorageMigration tasks", func() {
 	})
 
 	createValidPlanAndMigration := func(phase migrations.Phase) *migrations.VirtualMachineStorageMigration {
-		migplan := testutils.NewVirtualMachineStorageMigrationPlan(testutils.TestMigPlanName)
+		migplan := testutils.NewVirtualMachineStorageMigrationPlan(testutils.TestMigPlanName, testutils.NewVirtualMachine(testutils.TestVMName, testutils.TestNamespace, testutils.TestVolumeName, testutils.TestSourcePVCName))
 		Expect(k8sClient.Create(ctx, migplan)).To(Succeed())
 		migplan.Status.SetCondition(migrations.Condition{
 			Type:     migrations.Ready,

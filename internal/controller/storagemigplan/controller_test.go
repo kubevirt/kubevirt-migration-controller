@@ -53,7 +53,7 @@ var _ = Describe("StorageMigPlan Controller envtests - with minimal real apiserv
 		// Create a default storage class
 		storageClass := testutils.NewDefaultStorageClass("test-storage-class")
 		Expect(reconciler.Client.Create(ctx, storageClass)).To(Succeed())
-		migplan = testutils.NewVirtualMachineStorageMigrationPlan(testutils.TestMigPlanName)
+		migplan = testutils.NewVirtualMachineStorageMigrationPlan(testutils.TestMigPlanName, testutils.NewVirtualMachine(testutils.TestVMName, testutils.TestNamespace, testutils.TestVolumeName, testutils.TestSourcePVCName))
 		Expect(reconciler.Client.Create(ctx, migplan)).To(Succeed())
 	})
 

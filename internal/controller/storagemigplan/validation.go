@@ -43,6 +43,8 @@ const (
 	KubeVirtVersionNotSupportedReason            = "KubeVirtVersionNotSupported"
 	KubeVirtStorageLiveMigrationNotEnabledReason = "KubeVirtStorageLiveMigrationNotEnabled"
 	NotAllVirtualMachinesReadyReason             = "NotAllVirtualMachinesReady"
+	NotAllVirtualMachinesReadyMessage            = "Some virtual machines are not ready for storage migration"
+	NoVirtualMachinesReadyMessage                = "No virtual machines are ready for storage migration"
 
 	StorageMigrationNotPossibleType = "StorageMigrationNotPossible"
 	InvalidPVCsType                 = "InvalidPVCs"
@@ -97,29 +99,40 @@ func (r *StorageMigPlanReconciler) validateStorageMigrationPossible(ctx context.
 	plan.Status.CompletedMigrations = make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, 0)
 	plan.Status.InProgressMigrations = make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, 0)
 	plan.Status.FailedMigrations = make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, 0)
+	migrationStatus := r.getMigrationStatus(ctx, plan)
 	for _, vm := range plan.Spec.VirtualMachines {
 		if reason, message, err := componenthelpers.ValidateStorageMigrationPossibleForVM(ctx, r.Client, vm.Name, plan.Namespace); err != nil {
 			return err
 		} else if message != "" || reason != "" {
-			r.Log.V(5).Info("Setting StorageMigrationNotPossible condition", "reason", reason, "message", message)
+			r.Log.V(3).Info("Setting StorageMigrationNotPossible condition", "vm", vm.Name, "reason", reason, "message", message)
 			plan.Status.SetCondition(migrations.Condition{
-				Type:     StorageMigrationNotPossibleType,
+				Type:     NotAllVirtualMachinesReadyReason,
 				Status:   corev1.ConditionTrue,
 				Reason:   reason,
-				Category: migrations.Critical,
+				Category: migrations.Warn,
 				Message:  message,
 			})
-			return nil
+			continue
 		}
 
 		statusVM, err := r.createStatusVM(ctx, &vm, plan.Namespace, plan.Status.Suffix)
 		if err != nil {
 			return err
 		}
+		if len(statusVM.SourcePVCs) == 0 {
+			// If no source PVCs are found, don't add the virtual machine to the plan status.
+			r.Log.V(2).Info("No source PVCs found for virtual machine", "vm", vm.Name)
+			continue
+		}
 
-		// Add the virtual machine to the ready migrations if it is not completed.
-		if !r.isVMCompleted(plan, &vm) && !r.isVMInProgress(plan, &vm) && !r.isVMFailed(plan, &vm) {
+		// Add the virtual machine to the appropriate list based on the migration status
+		switch migrationStatus {
+		case notStarted:
 			plan.Status.ReadyMigrations = append(plan.Status.ReadyMigrations, statusVM)
+		case inProgress:
+			plan.Status.InProgressMigrations = append(plan.Status.InProgressMigrations, statusVM)
+		case completed:
+			plan.Status.CompletedMigrations = append(plan.Status.CompletedMigrations, statusVM)
 		}
 	}
 	// Validate the PVCs are valid
@@ -147,37 +160,21 @@ func (r *StorageMigPlanReconciler) validateStorageMigrationPossible(ctx context.
 			Status:   corev1.ConditionTrue,
 			Reason:   migrations.NotReady,
 			Category: migrations.Warn,
-			Message:  "Some virtual machines are not ready for storage migration",
+			Message:  NotAllVirtualMachinesReadyMessage,
+		})
+	} else {
+		plan.Status.DeleteCondition(NotAllVirtualMachinesReadyReason)
+	}
+	if len(plan.Status.ReadyMigrations) == 0 && len(plan.Status.InProgressMigrations) == 0 {
+		plan.Status.SetCondition(migrations.Condition{
+			Type:     NotAllVirtualMachinesReadyReason,
+			Status:   corev1.ConditionTrue,
+			Reason:   migrations.NotReady,
+			Category: migrations.Critical,
+			Message:  NoVirtualMachinesReadyMessage,
 		})
 	}
 	return nil
-}
-
-func (r *StorageMigPlanReconciler) isVMCompleted(plan *migrations.VirtualMachineStorageMigrationPlan, vm *migrations.VirtualMachineStorageMigrationPlanVirtualMachine) bool {
-	for _, completedVM := range plan.Status.CompletedMigrations {
-		if completedVM.Name == vm.Name {
-			return true
-		}
-	}
-	return false
-}
-
-func (r *StorageMigPlanReconciler) isVMInProgress(plan *migrations.VirtualMachineStorageMigrationPlan, vm *migrations.VirtualMachineStorageMigrationPlanVirtualMachine) bool {
-	for _, inProgressVM := range plan.Status.InProgressMigrations {
-		if inProgressVM.Name == vm.Name {
-			return true
-		}
-	}
-	return false
-}
-
-func (r *StorageMigPlanReconciler) isVMFailed(plan *migrations.VirtualMachineStorageMigrationPlan, vm *migrations.VirtualMachineStorageMigrationPlanVirtualMachine) bool {
-	for _, failedVM := range plan.Status.FailedMigrations {
-		if failedVM.Name == vm.Name {
-			return true
-		}
-	}
-	return false
 }
 
 func (r *StorageMigPlanReconciler) createStatusVM(ctx context.Context, migPlanVM *migrations.VirtualMachineStorageMigrationPlanVirtualMachine, namespace string, suffix *string) (migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, error) {
@@ -229,7 +226,8 @@ func (r *StorageMigPlanReconciler) getSourcePVC(ctx context.Context, vm *virtv1.
 		}
 	}
 	if pvcName == "" {
-		return nil, fmt.Errorf("pvc not found for volume %s", volumeName)
+		r.Log.V(2).Info("No source PVC found for volume", "volume", volumeName, "vm", vm.Name)
+		return nil, nil
 	}
 	pvc := &corev1.PersistentVolumeClaim{}
 	if err := r.Client.Get(ctx, types.NamespacedName{Namespace: vm.Namespace, Name: pvcName}, pvc); err != nil {
@@ -266,6 +264,7 @@ func (r *StorageMigPlanReconciler) validatePVCs(ctx context.Context, plan *migra
 	invalidMigrations := make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, 0)
 	lastReason := ""
 	lastMessage := ""
+	migrationStatus := r.getMigrationStatus(ctx, plan)
 	for _, vm := range plan.Status.ReadyMigrations {
 		issueFound := false
 		for i, pvc := range vm.TargetMigrationPVCs {
@@ -285,7 +284,7 @@ func (r *StorageMigPlanReconciler) validatePVCs(ctx context.Context, plan *migra
 					return "", "", err
 				} else if defaultStorageClass != "" {
 					// Set the targetPVC storage class to the default storage class.
-					vm.TargetMigrationPVCs[i].DestinationPVC.StorageClassName = ptr.To[string](defaultStorageClass)
+					vm.TargetMigrationPVCs[i].DestinationPVC.StorageClassName = ptr.To(defaultStorageClass)
 				} else {
 					lastReason = migrations.NotFound
 					lastMessage = "no default storage class found"
@@ -293,7 +292,7 @@ func (r *StorageMigPlanReconciler) validatePVCs(ctx context.Context, plan *migra
 					break
 				}
 			}
-			if vm.TargetMigrationPVCs[i].DestinationPVC.Name != nil && *vm.TargetMigrationPVCs[i].DestinationPVC.Name == vm.SourcePVCs[i].Name && !r.isVMMigrating(ctx, plan) {
+			if vm.TargetMigrationPVCs[i].DestinationPVC.Name != nil && *vm.TargetMigrationPVCs[i].DestinationPVC.Name == vm.SourcePVCs[i].Name && migrationStatus == notStarted {
 				lastReason = migrations.Conflict
 				lastMessage = fmt.Sprintf("VM %s has a destination PVC name for volume %s that is the same as the source PVC name", vm.Name, vm.TargetMigrationPVCs[i].VolumeName)
 				issueFound = true
@@ -311,24 +310,36 @@ func (r *StorageMigPlanReconciler) validatePVCs(ctx context.Context, plan *migra
 	return lastReason, lastMessage, nil
 }
 
-func (r *StorageMigPlanReconciler) isVMMigrating(ctx context.Context, plan *migrations.VirtualMachineStorageMigrationPlan) bool {
+type migrationStatus string
+
+const (
+	notStarted migrationStatus = "notStarted"
+	inProgress migrationStatus = "inProgress"
+	completed  migrationStatus = "completed"
+)
+
+func (r *StorageMigPlanReconciler) getMigrationStatus(ctx context.Context, plan *migrations.VirtualMachineStorageMigrationPlan) migrationStatus {
 	storageMigrationList := &migrations.VirtualMachineStorageMigrationList{}
 	if err := r.Client.List(ctx, storageMigrationList, client.InNamespace(plan.Namespace)); err != nil {
 		if !k8serrors.IsNotFound(err) {
 			r.Log.Error(err, "error listing storage migrations", "plan", plan.Name, "namespace", plan.Namespace)
 		}
-		return false
+		return notStarted
 	}
 	for _, storageMigration := range storageMigrationList.Items {
 		if storageMigration.Spec.VirtualMachineStorageMigrationPlanRef != nil &&
 			storageMigration.Spec.VirtualMachineStorageMigrationPlanRef.Name == plan.Name &&
 			(storageMigration.Status.Phase == migrations.WaitForLiveMigrationToComplete ||
-				storageMigration.Status.Phase == migrations.CleanupMigrationResources ||
-				storageMigration.Status.Phase == migrations.Completed) {
-			return true
+				storageMigration.Status.Phase == migrations.CleanupMigrationResources) {
+			return inProgress
+		}
+		if storageMigration.Spec.VirtualMachineStorageMigrationPlanRef != nil &&
+			storageMigration.Spec.VirtualMachineStorageMigrationPlanRef.Name == plan.Name &&
+			storageMigration.Status.Phase == migrations.Completed {
+			return completed
 		}
 	}
-	return false
+	return notStarted
 }
 
 func (r *StorageMigPlanReconciler) validateStorageClassExists(ctx context.Context, storageClass string) (string, string, error) {

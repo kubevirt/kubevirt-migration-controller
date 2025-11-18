@@ -31,12 +31,15 @@ import (
 	testutils "kubevirt.io/kubevirt-migration-controller/internal/controller/testutils"
 	componenthelpers "kubevirt.io/kubevirt-migration-controller/pkg/component-helpers"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 const (
 	originalPVCName = "original-pvc"
 	targetPVCName   = "target-pvc"
+	testVMName      = "test-vm"
+	testVolumeName  = "test-volume"
 )
 
 var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
@@ -57,6 +60,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				Client:        k8sClient,
 				Scheme:        scheme.Scheme,
 				EventRecorder: record.NewFakeRecorder(10),
+				Log:           logf.Log,
 			}
 			// Create a default storage class
 			storageClass := testutils.NewDefaultStorageClass("test-storage-class")
@@ -75,13 +79,13 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 			func(kv *virtv1.KubeVirt, expectedReason string) {
 				if kv != nil {
 					createKubeVirt(ctx, reconciler.Client, kv)
-					vm := testutils.NewVirtualMachine("test-vm", testutils.TestNamespace, "test-volume", originalPVCName)
+					vm := testutils.NewVirtualMachine(testVMName, testutils.TestNamespace, testVolumeName, originalPVCName)
 					Expect(reconciler.Client.Create(ctx, vm)).To(Succeed())
 					pvc := testutils.NewPersistentVolumeClaim(originalPVCName, vm.Namespace)
 					Expect(reconciler.Client.Create(ctx, pvc)).To(Succeed())
 				}
 
-				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName)
+				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName, testutils.NewVirtualMachine(testVMName, testutils.TestNamespace, testVolumeName, originalPVCName))
 				Expect(reconciler.Client.Create(ctx, migPlan)).To(Succeed())
 
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{
@@ -295,16 +299,16 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				Expect(reconciler.Client.Create(ctx, vm)).To(Succeed())
 				sourcePVC := testutils.NewPersistentVolumeClaim(sourcePVCName, vm.Namespace)
 				Expect(reconciler.Client.Create(ctx, sourcePVC)).To(Succeed())
-				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName)
+				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName, testutils.NewVirtualMachine(testVMName, testutils.TestNamespace, testVolumeName, sourcePVCName))
 				if targetPVCName != "" {
-					migPlan.Spec.VirtualMachines[0].TargetMigrationPVCs[0].DestinationPVC.Name = ptr.To[string](targetPVCName)
+					migPlan.Spec.VirtualMachines[0].TargetMigrationPVCs[0].DestinationPVC.Name = ptr.To(targetPVCName)
 				} else {
 					migPlan.Spec.VirtualMachines[0].TargetMigrationPVCs[0].DestinationPVC.Name = nil
 				}
 				Expect(reconciler.Client.Create(ctx, migPlan.DeepCopy())).To(Succeed())
 				updated := &migrations.VirtualMachineStorageMigrationPlan{}
 				Expect(reconciler.Client.Get(ctx, typeNamespacedName, updated)).NotTo(HaveOccurred())
-				updated.Status.Suffix = ptr.To[string]("abcd")
+				updated.Status.Suffix = ptr.To("abcd")
 				Expect(reconciler.Client.Status().Update(ctx, updated)).To(Succeed())
 
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{
@@ -331,7 +335,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				Expect(reconciler.Client.Create(ctx, vm)).To(Succeed())
 				sourcePVC := testutils.NewPersistentVolumeClaim(originalPVCName, vm.Namespace)
 				Expect(reconciler.Client.Create(ctx, sourcePVC)).To(Succeed())
-				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName)
+				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName, testutils.NewVirtualMachine(testVMName, testutils.TestNamespace, testVolumeName, originalPVCName))
 				targetPVC := targetPVCDef()
 				if targetPVC != nil {
 					migPlan.Spec.VirtualMachines[0].TargetMigrationPVCs[0].DestinationPVC = *targetPVC
@@ -358,12 +362,12 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				}, migrations.Ready, "plan is ready"),
 				Entry("target pvc name is same as source", func() *migrations.VirtualMachineStorageMigrationPlanDestinationPVC {
 					return &migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
-						Name: ptr.To[string](originalPVCName),
+						Name: ptr.To(originalPVCName),
 					}
 				}, InvalidPVCsType, "VM test-vm has a destination PVC name for volume test-volume that is the same as the source PVC name"),
 				Entry("target pvc storage class is not found", func() *migrations.VirtualMachineStorageMigrationPlanDestinationPVC {
 					return &migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
-						StorageClassName: ptr.To[string]("not-found"),
+						StorageClassName: ptr.To("not-found"),
 					}
 				}, InvalidPVCsType, "storage class not-found not found"),
 				Entry("target pvc storage class is not found", func() *migrations.VirtualMachineStorageMigrationPlanDestinationPVC {
@@ -374,15 +378,17 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				}, InvalidPVCsType, "no default storage class found"),
 			)
 
-			DescribeTable("should return an error if the vm is invalid", func(vmDef func() *virtv1.VirtualMachine, expectMessage string) {
+			DescribeTable("properly set conditions based on the migration plan and status of VMs", func(vmDef func() []*virtv1.VirtualMachine, expectMessage string, expectReadyStatus corev1.ConditionStatus) {
 				By("creating a VM and source PVC")
-				vm := vmDef()
-				if vm != nil {
+				vms := vmDef()
+				for _, vm := range vms {
 					Expect(reconciler.Client.Create(ctx, vm.DeepCopy())).To(Succeed())
 					updated := &virtv1.VirtualMachine{}
 					Expect(reconciler.Client.Get(ctx, types.NamespacedName{Namespace: vm.Namespace, Name: vm.Name}, updated)).To(Succeed())
 				}
-				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName)
+				sourcePVC := testutils.NewPersistentVolumeClaim(originalPVCName, vms[0].Namespace)
+				Expect(reconciler.Client.Create(ctx, sourcePVC)).To(Succeed())
+				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName, vms...)
 				Expect(reconciler.Client.Create(ctx, migPlan)).To(Succeed())
 
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{
@@ -390,23 +396,40 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				})
 				Expect(err).NotTo(HaveOccurred())
 				updated := &migrations.VirtualMachineStorageMigrationPlan{}
+				readyMessage := "plan is ready"
+				if expectReadyStatus == corev1.ConditionFalse {
+					readyMessage = "plan has one or more critical conditions"
+				}
 				Expect(reconciler.Client.Get(ctx, typeNamespacedName, updated)).NotTo(HaveOccurred())
-				Expect(updated.Status.Conditions.List).To(ContainElement(
+				Expect(updated.Status.Conditions.List).To(ContainElements(
 					And(
-						HaveField("Type", StorageMigrationNotPossibleType),
+						HaveField("Type", migrations.Ready),
+						HaveField("Status", expectReadyStatus),
+						HaveField("Message", readyMessage),
+					),
+					And(
+						HaveField("Type", NotAllVirtualMachinesReadyReason),
 						HaveField("Status", corev1.ConditionTrue),
 						HaveField("Message", expectMessage),
 					),
 				), "Expected conditions differ from found")
 			},
-				Entry("vm is nil", func() *virtv1.VirtualMachine { return nil }, "virtual machine not found"),
-				Entry("vm is not ready", func() *virtv1.VirtualMachine {
+				Entry("one vm is not ready", func() []*virtv1.VirtualMachine {
 					vm := testutils.NewVirtualMachine("test-vm", testutils.TestNamespace, "test-volume", originalPVCName)
 					vm.Status.Ready = false
 					vm.Status.Conditions = []virtv1.VirtualMachineCondition{}
-					return vm
-				}, "virtual machine is not ready"),
-				Entry("vm has storage live migratable condition set to false", func() *virtv1.VirtualMachine {
+					return []*virtv1.VirtualMachine{vm}
+				}, NoVirtualMachinesReadyMessage, corev1.ConditionFalse),
+				Entry("one vm is not ready, one is ready", func() []*virtv1.VirtualMachine {
+					vm := testutils.NewVirtualMachine("test-vm", testutils.TestNamespace, "test-volume", originalPVCName)
+					vm.Status.Ready = false
+					vm.Status.Conditions = []virtv1.VirtualMachineCondition{}
+					vm2 := testutils.NewVirtualMachine("test-vm2", testutils.TestNamespace, "test-volume2", originalPVCName)
+					vm2.Status.Ready = true
+					vm2.Status.Conditions = []virtv1.VirtualMachineCondition{}
+					return []*virtv1.VirtualMachine{vm, vm2}
+				}, NotAllVirtualMachinesReadyMessage, corev1.ConditionTrue),
+				Entry("one vm has storage live migratable condition set to false", func() []*virtv1.VirtualMachine {
 					vm := testutils.NewVirtualMachine("test-vm", testutils.TestNamespace, "test-volume", originalPVCName)
 					vm.Status.Conditions = []virtv1.VirtualMachineCondition{
 						{
@@ -416,9 +439,24 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 							Reason:  "explicitly set to false",
 						},
 					}
-					return vm
-				}, "storage live migration is not possible"),
-				Entry("vm has restart required condition set to true", func() *virtv1.VirtualMachine {
+					return []*virtv1.VirtualMachine{vm}
+				}, NoVirtualMachinesReadyMessage, corev1.ConditionFalse),
+				Entry("one vm has storage live migratable condition set to false, one is ready", func() []*virtv1.VirtualMachine {
+					vm := testutils.NewVirtualMachine("test-vm", testutils.TestNamespace, "test-volume", originalPVCName)
+					vm.Status.Conditions = []virtv1.VirtualMachineCondition{
+						{
+							Type:    componenthelpers.StorageLiveMigratable,
+							Status:  corev1.ConditionFalse,
+							Message: "storage live migration is not possible",
+							Reason:  "explicitly set to false",
+						},
+					}
+					vm2 := testutils.NewVirtualMachine("test-vm2", testutils.TestNamespace, "test-volume2", originalPVCName)
+					vm2.Status.Ready = true
+					vm2.Status.Conditions = []virtv1.VirtualMachineCondition{}
+					return []*virtv1.VirtualMachine{vm, vm2}
+				}, NotAllVirtualMachinesReadyMessage, corev1.ConditionTrue),
+				Entry("one vm has restart required condition set to true", func() []*virtv1.VirtualMachine {
 					vm := testutils.NewVirtualMachine("test-vm", testutils.TestNamespace, "test-volume", originalPVCName)
 					vm.Status.Conditions = append(vm.Status.Conditions, virtv1.VirtualMachineCondition{
 						Type:    virtv1.VirtualMachineRestartRequired,
@@ -426,8 +464,40 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 						Message: "virtual machine restart required",
 						Reason:  "restart required",
 					})
-					return vm
-				}, "virtual machine restart required"),
+					return []*virtv1.VirtualMachine{vm}
+				}, NoVirtualMachinesReadyMessage, corev1.ConditionFalse),
+				Entry("one vm has restart required condition set to true, one is ready", func() []*virtv1.VirtualMachine {
+					vm := testutils.NewVirtualMachine("test-vm", testutils.TestNamespace, "test-volume", originalPVCName)
+					vm.Status.Conditions = append(vm.Status.Conditions, virtv1.VirtualMachineCondition{
+						Type:    virtv1.VirtualMachineRestartRequired,
+						Status:  corev1.ConditionTrue,
+						Message: "virtual machine restart required",
+						Reason:  "restart required",
+					})
+					vm2 := testutils.NewVirtualMachine("test-vm2", testutils.TestNamespace, "test-volume2", originalPVCName)
+					vm2.Status.Ready = true
+					vm2.Status.Conditions = []virtv1.VirtualMachineCondition{}
+					return []*virtv1.VirtualMachine{vm, vm2}
+				}, NotAllVirtualMachinesReadyMessage, corev1.ConditionTrue),
+				Entry("one vm has restart required condition set to true, one has livemigratable false", func() []*virtv1.VirtualMachine {
+					vm := testutils.NewVirtualMachine("test-vm", testutils.TestNamespace, "test-volume", originalPVCName)
+					vm.Status.Conditions = append(vm.Status.Conditions, virtv1.VirtualMachineCondition{
+						Type:    virtv1.VirtualMachineRestartRequired,
+						Status:  corev1.ConditionTrue,
+						Message: "virtual machine restart required",
+						Reason:  "restart required",
+					})
+					vm2 := testutils.NewVirtualMachine("test-vm2", testutils.TestNamespace, "test-volume", originalPVCName)
+					vm2.Status.Conditions = []virtv1.VirtualMachineCondition{
+						{
+							Type:    componenthelpers.StorageLiveMigratable,
+							Status:  corev1.ConditionFalse,
+							Message: "storage live migration is not possible",
+							Reason:  "explicitly set to false",
+						},
+					}
+					return []*virtv1.VirtualMachine{vm, vm2}
+				}, NoVirtualMachinesReadyMessage, corev1.ConditionFalse),
 			)
 
 			It("should prefer the virt default storage class over the default storage class", func() {
@@ -439,7 +509,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				By("creating a virt default storage class")
 				virtDefaultStorageClass := testutils.NewVirtDefaultStorageClass("virt-default-storage-class")
 				Expect(reconciler.Client.Create(ctx, virtDefaultStorageClass)).To(Succeed())
-				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName)
+				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName, vm)
 				Expect(reconciler.Client.Create(ctx, migPlan)).To(Succeed())
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: typeNamespacedName,

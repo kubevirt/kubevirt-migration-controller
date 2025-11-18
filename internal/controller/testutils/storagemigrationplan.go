@@ -22,8 +22,8 @@ const (
 	TestNodeName      = "test-node"
 )
 
-func NewVirtualMachineStorageMigrationPlan(name string) *migrations.VirtualMachineStorageMigrationPlan {
-	return &migrations.VirtualMachineStorageMigrationPlan{
+func NewVirtualMachineStorageMigrationPlan(name string, vms ...*virtv1.VirtualMachine) *migrations.VirtualMachineStorageMigrationPlan {
+	plan := &migrations.VirtualMachineStorageMigrationPlan{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       migrations.VirtualMachineStorageMigrationPlanKind,
 			APIVersion: migrations.GroupVersion.String(),
@@ -32,22 +32,34 @@ func NewVirtualMachineStorageMigrationPlan(name string) *migrations.VirtualMachi
 			Name:      name,
 			Namespace: TestNamespace,
 		},
-		Spec: migrations.VirtualMachineStorageMigrationPlanSpec{
-			VirtualMachines: []migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
-				{
-					Name: TestVMName,
-					TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
-						{
-							VolumeName: TestVolumeName,
-							DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
-								Name: ptr.To[string](TestTargetPVCName),
-							},
-						},
-					},
-				},
-			},
-		},
+		Spec: migrations.VirtualMachineStorageMigrationPlanSpec{},
 	}
+
+	for _, vm := range vms {
+		volumes := make([]migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC, 0)
+		for _, volume := range vm.Spec.Template.Spec.Volumes {
+			// pvcName := ""
+			// if volume.PersistentVolumeClaim != nil {
+			// 	pvcName = volume.PersistentVolumeClaim.ClaimName
+			// } else if volume.DataVolume != nil {
+			// 	pvcName = volume.DataVolume.Name
+			// }
+			// if pvcName == "" {
+			// 	pvcName =
+			// }
+			volumes = append(volumes, migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+				VolumeName: volume.Name,
+				DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+					Name: ptr.To(TestTargetPVCName),
+				},
+			})
+		}
+		plan.Spec.VirtualMachines = append(plan.Spec.VirtualMachines, migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+			Name:                vm.Name,
+			TargetMigrationPVCs: volumes,
+		})
+	}
+	return plan
 }
 
 func NewVirtualMachine(name, namespace, volumeName, pvcName string) *virtv1.VirtualMachine {

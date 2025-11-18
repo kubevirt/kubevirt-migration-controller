@@ -103,6 +103,8 @@ func (r *StorageMigPlanReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err := r.validate(ctx, plan); err != nil {
 		r.Log.Error(err, "Failed to validate VirtualMachineStorageMigrationPlan")
 		plan.Status.SetReconcileFailed(err)
+	} else {
+		plan.Status.DeleteCondition(migrations.ReconcileFailed)
 	}
 
 	if plan.Status.HasCriticalCondition() {

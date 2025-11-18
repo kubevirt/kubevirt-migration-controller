@@ -77,7 +77,11 @@ func (t *Task) Run(ctx context.Context) error {
 		t.Owner.Status.Phase = migrations.BeginLiveMigration
 	case migrations.BeginLiveMigration:
 		log.V(5).Info("Processing BeginLiveMigration phase", "readyMigrations", len(t.Plan.Status.ReadyMigrations))
-		for _, vm := range t.Plan.Status.ReadyMigrations {
+		log.V(5).Info("Processing BeginLiveMigration phase", "inProgressMigrations", len(t.Plan.Status.InProgressMigrations))
+		checkMigrations := make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, 0)
+		checkMigrations = append(checkMigrations, t.Plan.Status.ReadyMigrations...)
+		checkMigrations = append(checkMigrations, t.Plan.Status.InProgressMigrations...)
+		for _, vm := range checkMigrations {
 			if can, err := t.canVMStorageMigrate(ctx, vm.Name); err != nil {
 				return err
 			} else if !can {

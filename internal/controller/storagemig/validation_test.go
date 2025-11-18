@@ -43,7 +43,7 @@ var _ = Describe("StorageMigration Validation", func() {
 			migration := createMigration(testutils.TestMigMigrationName)
 			migration.Spec.VirtualMachineStorageMigrationPlanRef.UID = "123"
 			Expect(k8sClient.Create(ctx, migration)).To(Succeed())
-			migplan := testutils.NewVirtualMachineStorageMigrationPlan(testutils.TestMigPlanName)
+			migplan := testutils.NewVirtualMachineStorageMigrationPlan(testutils.TestMigPlanName, testutils.NewVirtualMachine(testutils.TestVMName, testutils.TestNamespace, testutils.TestVolumeName, testutils.TestSourcePVCName))
 			Expect(k8sClient.Create(ctx, migplan)).To(Succeed())
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -83,7 +83,7 @@ var _ = Describe("StorageMigration Validation", func() {
 		It("should return an error condition if the migration plan is has critical conditions", func() {
 			migration := createMigration(testutils.TestMigMigrationName)
 			Expect(k8sClient.Create(ctx, migration)).To(Succeed())
-			migplan := testutils.NewVirtualMachineStorageMigrationPlan(testutils.TestMigPlanName)
+			migplan := testutils.NewVirtualMachineStorageMigrationPlan(testutils.TestMigPlanName, testutils.NewVirtualMachine(testutils.TestVMName, testutils.TestNamespace, testutils.TestVolumeName, testutils.TestSourcePVCName))
 			Expect(k8sClient.Create(ctx, migplan)).To(Succeed())
 			migplan.Status.SetCondition(migrations.Condition{
 				Type:     PlanNotReady,

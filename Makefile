@@ -133,16 +133,12 @@ vet: ## Run go vet against code.
 
 .PHONY: test
 test: manifests generate fmt vet setup-envtest ginkgo ## Run tests.
-	@echo "Running unit tests ginkgo $(GINKGO)"
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" $(GINKGO) -v --coverprofile=.coverage-report.out --junit-report=$(ARTIFACTS)/junit.functest.xml  $$(go list ./... | grep -v /e2e | awk '{gsub("kubevirt.io/kubevirt-migration-controller/", ""); print}')
+	@echo "Current path [$(PWD)] Running unit tests ginkgo $(GINKGO) saving results to $(ARTIFACTS)/junit.functest.xml"
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" $(GINKGO) -v --coverprofile=.coverage-report.out --output-dir=$(ARTIFACTS) --junit-report=junit.functest.xml  $$(go list ./... | grep -v /e2e | awk '{gsub("kubevirt.io/kubevirt-migration-controller/", ""); print}')
 
-# TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
-# The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
-# CertManager is installed by default; skip with:
-# - CERT_MANAGER_INSTALL_SKIP=true
 .PHONY: test-e2e
 test-e2e: manifests generate fmt vet gotestsum ## Run the e2e tests. Expected an isolated environment using Kind.
-	@echo "Running e2e tests gotestsum $(GOTESTSUM)"
+	@echo "Running e2e tests gotestsum $(GOTESTSUM)" saving results to $(ARTIFACTS)/junit.functest.xml
 	$(GOTESTSUM) --junitfile $(ARTIFACTS)/junit.functest.xml -- ./test/e2e/ -v -ginkgo.v --migration-controller-namespace=$(MIGRATION_CONTROLLER_NAMESPACE) --kubectl-path=$(KUBECTL_PATH) --test-kubeconfig=$(KUBECONFIG) --kubeurl=$(KUBEURL)
 
 .PHONY: lint
