@@ -6,6 +6,8 @@
 resources:
 - bases/migrations.kubevirt.io_virtualmachinestoragemigrationplans.yaml
 - bases/migrations.kubevirt.io_virtualmachinestoragemigrations.yaml
+- bases/migrations.kubevirt.io_multinamespacevirtualmachinestoragemigrationplans.yaml
+- bases/migrations.kubevirt.io_multinamespacevirtualmachinestoragemigrations.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

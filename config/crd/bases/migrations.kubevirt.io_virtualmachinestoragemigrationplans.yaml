@@ -121,7 +121,8 @@ spec:
             - virtualMachines
             type: object
           status:
-            description: MigPlanStatus defines the observed state of MigPlan
+            description: VirtualMachineStorageMigrationPlanStatus defines the observed
+              state of VirtualMachineStorageMigrationPlan
             properties:
               completedMigrations:
                 description: The migrations that have been completed.

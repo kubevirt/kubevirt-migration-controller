@@ -1,3 +1,18 @@
+/*
+Copyright 2025 The KubeVirt Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 package storagemig
 
 import (
@@ -211,7 +226,7 @@ func (t *Task) updateVMForStorageMigration(ctx context.Context, vm *virtv1.Virtu
 // The plan controller will put the end time annotation on the plan when the refresh is complete.
 // If the end time is after the start time, then the refresh is complete and we can start the live migration.
 func (t *Task) refreshReadyVirtualMachines(ctx context.Context) error {
-	plan, err := componenthelpers.GetPlan(ctx, t.Client, t.Owner.Spec.VirtualMachineStorageMigrationPlanRef)
+	plan, err := componenthelpers.GetStorageMigrationPlan(ctx, t.Client, t.Owner.Spec.VirtualMachineStorageMigrationPlanRef)
 	if err != nil {
 		return err
 	}
@@ -236,7 +251,7 @@ func (t *Task) refreshReadyVirtualMachines(ctx context.Context) error {
 
 func (t *Task) refreshCompletedVirtualMachines(ctx context.Context) (bool, error) {
 	log := logf.FromContext(ctx)
-	plan, err := componenthelpers.GetPlan(ctx, t.Client, t.Owner.Spec.VirtualMachineStorageMigrationPlanRef)
+	plan, err := componenthelpers.GetStorageMigrationPlan(ctx, t.Client, t.Owner.Spec.VirtualMachineStorageMigrationPlanRef)
 	if err != nil {
 		return false, err
 	}

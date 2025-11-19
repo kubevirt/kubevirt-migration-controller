@@ -79,7 +79,7 @@ type VirtualMachineStorageMigrationPlanDestinationPVC struct {
 	VolumeMode *corev1.PersistentVolumeMode `json:"volumeMode,omitempty"`
 }
 
-// MigPlanStatus defines the observed state of MigPlan
+// VirtualMachineStorageMigrationPlanStatus defines the observed state of VirtualMachineStorageMigrationPlan
 type VirtualMachineStorageMigrationPlanStatus struct {
 	// The number of virtual machines that have been completed out of the total number of virtual machines.
 	CompletedOutOf string `json:"completedOutOf,omitempty"`

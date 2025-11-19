@@ -35,9 +35,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
@@ -46,7 +44,7 @@ import (
 )
 
 const (
-	planNameIndexKey = "spec.migPlanRef"
+	planNameIndexKey = "spec.virtualMachineStorageMigrationPlanRef"
 )
 
 // MigMigrationReconciler reconciles a MigMigration object
@@ -111,13 +109,13 @@ func (r *StorageMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		log.V(3).Info("No plan reference found")
 		return reconcile.Result{}, nil
 	}
-	plan, err := componenthelpers.GetPlan(ctx, r.Client, migration.Spec.VirtualMachineStorageMigrationPlanRef)
+	plan, err := componenthelpers.GetStorageMigrationPlan(ctx, r.Client, migration.Spec.VirtualMachineStorageMigrationPlanRef)
 	if err != nil {
 		return reconcile.Result{}, err
 	}
 
 	if plan != nil {
-		migration.Status.DeleteCondition(InvalidPlanRef)
+		migration.Status.DeleteCondition(migrations.InvalidPlanRef)
 
 		// Owner Reference
 		r.setOwnerReference(plan, migration)
@@ -126,7 +124,7 @@ func (r *StorageMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		r.validate(plan, migration)
 	} else {
 		migration.Status.SetCondition(migrations.Condition{
-			Type:     InvalidPlanRef,
+			Type:     migrations.InvalidPlanRef,
 			Status:   corev1.ConditionTrue,
 			Reason:   migrations.NotFound,
 			Category: migrations.Critical,
@@ -201,7 +199,7 @@ func (r *StorageMigrationReconciler) setOwnerReference(plan *migrations.VirtualM
 // SetupWithManager sets up the controller with the Manager.
 func (r *StorageMigrationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Create a new controller
-	c, err := controller.New("migmigration-controller", mgr, controller.Options{Reconciler: r})
+	c, err := controller.New("kubevirt-storage-migration-controller", mgr, controller.Options{Reconciler: r})
 	if err != nil {
 		return err
 	}
@@ -209,13 +207,7 @@ func (r *StorageMigrationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	// Watch for changes to MigMigration
 	if err := c.Watch(source.Kind(mgr.GetCache(), &migrations.VirtualMachineStorageMigration{},
-		&handler.TypedEnqueueRequestForObject[*migrations.VirtualMachineStorageMigration]{},
-		predicate.TypedFuncs[*migrations.VirtualMachineStorageMigration]{
-			CreateFunc: func(e event.TypedCreateEvent[*migrations.VirtualMachineStorageMigration]) bool { return true },
-			DeleteFunc: func(e event.TypedDeleteEvent[*migrations.VirtualMachineStorageMigration]) bool { return true },
-			UpdateFunc: func(e event.TypedUpdateEvent[*migrations.VirtualMachineStorageMigration]) bool { return true },
-		},
-	)); err != nil {
+		&handler.TypedEnqueueRequestForObject[*migrations.VirtualMachineStorageMigration]{})); err != nil {
 		return err
 	}
 
@@ -233,25 +225,13 @@ func (r *StorageMigrationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	// Watch for changes to MigPlans
 	if err := c.Watch(source.Kind(mgr.GetCache(), &migrations.VirtualMachineStorageMigrationPlan{},
-		handler.TypedEnqueueRequestsFromMapFunc(r.getMigMigrationsForPlan),
-		predicate.TypedFuncs[*migrations.VirtualMachineStorageMigrationPlan]{
-			CreateFunc: func(e event.TypedCreateEvent[*migrations.VirtualMachineStorageMigrationPlan]) bool { return true },
-			DeleteFunc: func(e event.TypedDeleteEvent[*migrations.VirtualMachineStorageMigrationPlan]) bool { return true },
-			UpdateFunc: func(e event.TypedUpdateEvent[*migrations.VirtualMachineStorageMigrationPlan]) bool { return true },
-		},
-	)); err != nil {
+		handler.TypedEnqueueRequestsFromMapFunc(r.getMigMigrationsForPlan))); err != nil {
 		return err
 	}
 
 	// Watch for changes to VirtualMachineInstanceMigrations
 	if err := c.Watch(source.Kind(mgr.GetCache(), &virtv1.VirtualMachineInstanceMigration{},
-		handler.TypedEnqueueRequestsFromMapFunc(r.getMigMigrationsForVMIM),
-		predicate.TypedFuncs[*virtv1.VirtualMachineInstanceMigration]{
-			CreateFunc: func(e event.TypedCreateEvent[*virtv1.VirtualMachineInstanceMigration]) bool { return true },
-			DeleteFunc: func(e event.TypedDeleteEvent[*virtv1.VirtualMachineInstanceMigration]) bool { return true },
-			UpdateFunc: func(e event.TypedUpdateEvent[*virtv1.VirtualMachineInstanceMigration]) bool { return true },
-		},
-	)); err != nil {
+		handler.TypedEnqueueRequestsFromMapFunc(r.getMigMigrationsForVMIM))); err != nil {
 		return err
 	}
 

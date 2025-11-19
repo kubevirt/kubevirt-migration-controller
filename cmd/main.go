@@ -43,6 +43,8 @@ import (
 	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 
 	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
+	multinamespacestoragemig "kubevirt.io/kubevirt-migration-controller/internal/controller/multinamespacestoragemig"
+	"kubevirt.io/kubevirt-migration-controller/internal/controller/multinamespacestoragemigplan"
 	storagemig "kubevirt.io/kubevirt-migration-controller/internal/controller/storagemig"
 	storagemigplan "kubevirt.io/kubevirt-migration-controller/internal/controller/storagemigplan"
 	// +kubebuilder:scaffold:imports
@@ -190,23 +192,13 @@ func main() {
 	cfg.WarningHandler = rest.NoWarnings{}
 
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsServerOptions,
-		WebhookServer:          webhookServer,
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "0f145542.kubevirt.io",
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		//
-		// In the default scaffold provided, the program ends immediately after
-		// the manager stops, so would be fine to enable this option. However,
-		// if you are doing or is intended to do any operation such as perform cleanups
-		// after the manager stops then its usage might be unsafe.
-		// LeaderElectionReleaseOnCancel: true,
+		Scheme:                        scheme,
+		Metrics:                       metricsServerOptions,
+		WebhookServer:                 webhookServer,
+		HealthProbeBindAddress:        probeAddr,
+		LeaderElection:                enableLeaderElection,
+		LeaderElectionID:              "0f145542.kubevirt.io",
+		LeaderElectionReleaseOnCancel: true,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -229,6 +221,24 @@ func main() {
 		Log:           ctrl.Log.WithName("storagemig-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "StorageMigration")
+		os.Exit(1)
+	}
+	if err = (&multinamespacestoragemigplan.MultiNamespaceStorageMigPlanReconciler{
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		EventRecorder: mgr.GetEventRecorderFor("multinamespacestoragemigplan-controller"),
+		Log:           ctrl.Log.WithName("multinamespacestoragemigplan-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "MultiNamespaceStorageMigrationPlan")
+		os.Exit(1)
+	}
+	if err = (&multinamespacestoragemig.MultiNamespaceStorageMigrationReconciler{
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		EventRecorder: mgr.GetEventRecorderFor("multinamespacestoragemig-controller"),
+		Log:           ctrl.Log.WithName("multinamespacestoragemig-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "MultiNamespaceStorageMigration")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

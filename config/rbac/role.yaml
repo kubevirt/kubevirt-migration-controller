@@ -23,6 +23,7 @@ rules:
   resources:
   - persistentvolumes
   - configmaps
+  - namespaces
   verbs:
   - list
   - watch
@@ -90,6 +91,8 @@ rules:
   resources:
   - virtualmachinestoragemigrations
   - virtualmachinestoragemigrationplans
+  - multinamespacevirtualmachinestoragemigrationplans
+  - multinamespacevirtualmachinestoragemigrations
   verbs:
   - create
   - delete
@@ -109,6 +112,8 @@ rules:
   resources:
   - virtualmachinestoragemigrations/status
   - virtualmachinestoragemigrationplans/status
+  - multinamespacevirtualmachinestoragemigrationplans/status
+  - multinamespacevirtualmachinestoragemigrations/status
   verbs:
   - get
   - patch

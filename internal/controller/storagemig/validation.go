@@ -1,3 +1,18 @@
+/*
+Copyright 2025 The KubeVirt Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 package storagemig
 
 import (
@@ -19,15 +34,6 @@ const (
 	NotDistinct    = "NotDistinct"
 )
 
-// Types
-const (
-	InvalidPlanRef        = "InvalidPlanRef"
-	PlanNotReady          = "PlanNotReady"
-	PlanClosed            = "PlanClosed"
-	SucceededWithWarnings = "SucceededWithWarnings"
-	InvalidSpec           = "InvalidSpec"
-)
-
 // Validate the migration resource.
 func (r *StorageMigrationReconciler) validate(plan *migrations.VirtualMachineStorageMigrationPlan, migration *migrations.VirtualMachineStorageMigration) {
 	log := r.Log
@@ -36,7 +42,7 @@ func (r *StorageMigrationReconciler) validate(plan *migrations.VirtualMachineSto
 	if ownerReference == nil {
 		log.Info("cannot find owner reference")
 		migration.Status.SetCondition(migrations.Condition{
-			Type:     InvalidPlanRef,
+			Type:     migrations.InvalidPlanRef,
 			Status:   corev1.ConditionTrue,
 			Reason:   migrations.NotFound,
 			Category: migrations.Critical,
@@ -44,13 +50,13 @@ func (r *StorageMigrationReconciler) validate(plan *migrations.VirtualMachineSto
 		})
 		return
 	} else {
-		migration.Status.DeleteCondition(InvalidPlanRef)
+		migration.Status.DeleteCondition(migrations.InvalidPlanRef)
 	}
 	if migration.Spec.VirtualMachineStorageMigrationPlanRef.UID != "" {
 		if ownerReference.UID != migration.Spec.VirtualMachineStorageMigrationPlanRef.UID {
 			log.Info("uid mismatch", "owner reference uid", ownerReference.UID, "migration uid", migration.Spec.VirtualMachineStorageMigrationPlanRef.UID)
 			migration.Status.SetCondition(migrations.Condition{
-				Type:     InvalidPlanRef,
+				Type:     migrations.InvalidPlanRef,
 				Status:   corev1.ConditionTrue,
 				Reason:   migrations.NotFound,
 				Category: migrations.Critical,
@@ -58,7 +64,7 @@ func (r *StorageMigrationReconciler) validate(plan *migrations.VirtualMachineSto
 			})
 			return
 		} else {
-			migration.Status.DeleteCondition(InvalidPlanRef)
+			migration.Status.DeleteCondition(migrations.InvalidPlanRef)
 		}
 	}
 	r.validatePlan(plan, migration)
@@ -69,7 +75,7 @@ func (r *StorageMigrationReconciler) validatePlan(plan *migrations.VirtualMachin
 	// Check if the plan has any critical conditions
 	if plan.Status.HasCriticalCondition() {
 		migration.Status.SetCondition(migrations.Condition{
-			Type:     PlanNotReady,
+			Type:     migrations.PlanNotReady,
 			Status:   corev1.ConditionTrue,
 			Reason:   migrations.NotReady,
 			Category: migrations.Critical,
@@ -77,6 +83,6 @@ func (r *StorageMigrationReconciler) validatePlan(plan *migrations.VirtualMachin
 				path.Join(migration.Spec.VirtualMachineStorageMigrationPlanRef.Namespace, migration.Spec.VirtualMachineStorageMigrationPlanRef.Name)),
 		})
 	} else {
-		migration.Status.DeleteCondition(PlanNotReady)
+		migration.Status.DeleteCondition(migrations.PlanNotReady)
 	}
 }

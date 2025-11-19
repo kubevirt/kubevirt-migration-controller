@@ -37,9 +37,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 )
@@ -51,7 +49,7 @@ const (
 	RefreshEndTimeAnnotation   = "migration.kubevirt.io/refresh-end-time"
 )
 
-// MigPlanReconciler reconciles a MigPlan object
+// StorageMigPlanReconciler reconciles a VirtualMachineStorageMigrationPlan object
 type StorageMigPlanReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -59,30 +57,21 @@ type StorageMigPlanReconciler struct {
 	Log logr.Logger
 }
 
-// +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=migplans,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=migplans/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=migplans/finalizers,verbs=update
+// +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=virtualmachinestoragemigrationplans,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=virtualmachinestoragemigrationplans/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=virtualmachinestoragemigrationplans/finalizers,verbs=update
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
-// +kubebuilder:rbac:groups=core,resources=persistentvolumes,verbs=list;watch
 // +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=list;watch
 // +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=list;watch
 // +kubebuilder:rbac:groups=kubevirt.io,resources=kubevirts,verbs=list;watch
-
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the MigPlan object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.20.4/pkg/reconcile
+// +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachines,verbs=get;list;watch;patch
+// +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=virtualmachinestoragemigrations,verbs=get;list;watch
 func (r *StorageMigPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log
 	log.V(5).Info("Reconciling VirtualMachineStorageMigrationPlan", "name", req.NamespacedName)
 	// Fetch the MigPlan instance
 	plan := &migrations.VirtualMachineStorageMigrationPlan{}
-	err := r.Get(context.TODO(), req.NamespacedName, plan)
+	err := r.Get(ctx, req.NamespacedName, plan)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			return reconcile.Result{}, nil
@@ -120,7 +109,7 @@ func (r *StorageMigPlanReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	planStatusCopy := plan.Status.DeepCopy()
 	if !apiequality.Semantic.DeepEqual(plan.Status, planCopy.Status) {
 		log.V(5).Info("Updating MigPlan status")
-		if err := r.Status().Update(context.TODO(), plan); err != nil {
+		if err := r.Status().Update(ctx, plan); err != nil {
 			return reconcile.Result{}, err
 		}
 	}
@@ -128,7 +117,7 @@ func (r *StorageMigPlanReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	if r.shouldUpdateRefresh(plan) {
 		r.setRefreshAnnotations(plan)
-		if err := r.Update(context.TODO(), plan); err != nil {
+		if err := r.Update(ctx, plan); err != nil {
 			return reconcile.Result{}, err
 		}
 	}
@@ -234,19 +223,14 @@ func (r *StorageMigPlanReconciler) setRefreshAnnotations(plan *migrations.Virtua
 // SetupWithManager sets up the controller with the Manager.
 func (r *StorageMigPlanReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Create a new controller
-	c, err := controller.New("kubevirt-migplan-controller", mgr, controller.Options{Reconciler: r})
+	c, err := controller.New("kubevirt-storage-migplan-controller", mgr, controller.Options{Reconciler: r})
 	if err != nil {
 		return err
 	}
 
-	// Watch for changes to MigPlan
+	// Watch for changes to VirtualMachineStorageMigrationPlan
 	if err := c.Watch(source.Kind(mgr.GetCache(), &migrations.VirtualMachineStorageMigrationPlan{},
-		&handler.TypedEnqueueRequestForObject[*migrations.VirtualMachineStorageMigrationPlan]{},
-		predicate.TypedFuncs[*migrations.VirtualMachineStorageMigrationPlan]{
-			CreateFunc: func(e event.TypedCreateEvent[*migrations.VirtualMachineStorageMigrationPlan]) bool { return true },
-			DeleteFunc: func(e event.TypedDeleteEvent[*migrations.VirtualMachineStorageMigrationPlan]) bool { return true },
-			UpdateFunc: func(e event.TypedUpdateEvent[*migrations.VirtualMachineStorageMigrationPlan]) bool { return true },
-		})); err != nil {
+		&handler.TypedEnqueueRequestForObject[*migrations.VirtualMachineStorageMigrationPlan]{})); err != nil {
 		return err
 	}
 
@@ -266,13 +250,7 @@ func (r *StorageMigPlanReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Watch for changes to VMs
 	if err := c.Watch(source.Kind(mgr.GetCache(), &virtv1.VirtualMachine{},
 		// Map function that enqueues requests for VirtualMachineStorageMigrationPlans that have the VM in their spec
-		handler.TypedEnqueueRequestsFromMapFunc(r.getVirtualMachineMigrationPlansForVM),
-		predicate.TypedFuncs[*virtv1.VirtualMachine]{
-			CreateFunc: func(e event.TypedCreateEvent[*virtv1.VirtualMachine]) bool { return true },
-			DeleteFunc: func(e event.TypedDeleteEvent[*virtv1.VirtualMachine]) bool { return true },
-			UpdateFunc: func(e event.TypedUpdateEvent[*virtv1.VirtualMachine]) bool { return true },
-		},
-	)); err != nil {
+		handler.TypedEnqueueRequestsFromMapFunc(r.getVirtualMachineMigrationPlansForVM))); err != nil {
 		return err
 	}
 
@@ -289,13 +267,7 @@ func (r *StorageMigPlanReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	// Watch for changes to VirtualMachineStorageMigrations
 	if err := c.Watch(source.Kind(mgr.GetCache(), &migrations.VirtualMachineStorageMigration{},
-		handler.TypedEnqueueRequestsFromMapFunc(r.getVirtualMachineStorageMigrationsPlanForStorageMigration),
-		predicate.TypedFuncs[*migrations.VirtualMachineStorageMigration]{
-			CreateFunc: func(e event.TypedCreateEvent[*migrations.VirtualMachineStorageMigration]) bool { return true },
-			DeleteFunc: func(e event.TypedDeleteEvent[*migrations.VirtualMachineStorageMigration]) bool { return true },
-			UpdateFunc: func(e event.TypedUpdateEvent[*migrations.VirtualMachineStorageMigration]) bool { return true },
-		},
-	)); err != nil {
+		handler.TypedEnqueueRequestsFromMapFunc(r.getVirtualMachineStorageMigrationsPlanForStorageMigration))); err != nil {
 		return err
 	}
 	return nil

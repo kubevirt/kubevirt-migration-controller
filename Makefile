@@ -137,7 +137,7 @@ test: manifests generate fmt vet setup-envtest ginkgo ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" $(GINKGO) -v --coverprofile=.coverage-report.out --output-dir=$(ARTIFACTS) --junit-report=junit.functest.xml  $$(go list ./... | grep -v /e2e | awk '{gsub("kubevirt.io/kubevirt-migration-controller/", ""); print}')
 
 .PHONY: test-e2e
-test-e2e: manifests generate fmt vet gotestsum ## Run the e2e tests. Expected an isolated environment using Kind.
+test-e2e: manifests generate fmt vet gotestsum ## Run the e2e tests
 	@echo "Running e2e tests gotestsum $(GOTESTSUM)" saving results to $(ARTIFACTS)/junit.functest.xml
 	$(GOTESTSUM) --junitfile $(ARTIFACTS)/junit.functest.xml -- ./test/e2e/ -v -ginkgo.v --migration-controller-namespace=$(MIGRATION_CONTROLLER_NAMESPACE) --kubectl-path=$(KUBECTL_PATH) --test-kubeconfig=$(KUBECONFIG) --kubeurl=$(KUBEURL)
 
@@ -251,7 +251,7 @@ CLIENT_GEN_VERSION ?= v0.34.1
 ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller-runtime | awk -F'[v.]' '{printf "release-%d.%d", $$2, $$3}')
 #ENVTEST_K8S_VERSION is the version of Kubernetes to use for setting up ENVTEST binaries (i.e. 1.31)
 ENVTEST_K8S_VERSION ?= $(shell go list -m -f "{{ .Version }}" k8s.io/api | awk -F'[v.]' '{printf "1.%d", $$3}')
-GOLANGCI_LINT_VERSION ?= v1.63.4
+GOLANGCI_LINT_VERSION ?= v1.64.8
 GOTESTSUM_VERSION ?= v1.13.0
 GINKGO_VERSION ?= v2.27.2
 

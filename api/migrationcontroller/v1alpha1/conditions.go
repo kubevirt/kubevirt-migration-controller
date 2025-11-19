@@ -20,6 +20,12 @@ const (
 	Succeeded       = "Succeeded"
 )
 
+// Types
+const (
+	InvalidPlanRef = "InvalidPlanRef"
+	PlanNotReady   = "PlanNotReady"
+)
+
 // Reasons
 const (
 	NotFound     = "NotFound"

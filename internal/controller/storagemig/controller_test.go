@@ -72,7 +72,7 @@ var _ = Describe("StorageMigration Controller", func() {
 			Expect(migration.Status.HasBlockerCondition()).To(BeTrue())
 			Expect(migration.Status.Conditions.List).To(ContainElement(
 				And(
-					HaveField("Type", InvalidPlanRef),
+					HaveField("Type", migrations.InvalidPlanRef),
 					HaveField("Status", corev1.ConditionTrue),
 				),
 			), "Expected conditions differ from found")
