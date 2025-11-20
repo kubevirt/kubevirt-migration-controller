@@ -50,7 +50,7 @@ endif
 # This is useful for CI or a project to utilize a specific version of the operator-sdk toolkit.
 OPERATOR_SDK_VERSION ?= v1.40.0
 # Image URL to use all building/pushing image targets
-IMG ?= kubevirt-migration-controller:latest
+IMG ?= kubevirt-migration-controller
 
 DOCKER_REPO ?= localhost
 DEPLOYMENT_TARGET ?= default
@@ -137,7 +137,7 @@ test: manifests generate fmt vet setup-envtest ginkgo ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" $(GINKGO) -v --coverprofile=.coverage-report.out --output-dir=$(ARTIFACTS) --junit-report=junit.functest.xml  $$(go list ./... | grep -v /e2e | awk '{gsub("kubevirt.io/kubevirt-migration-controller/", ""); print}')
 
 .PHONY: test-e2e
-test-e2e: manifests generate fmt vet gotestsum ## Run the e2e tests. Expected an isolated environment using Kind.
+test-e2e: manifests generate fmt vet gotestsum ## Run the e2e tests
 	@echo "Running e2e tests gotestsum $(GOTESTSUM)" saving results to $(ARTIFACTS)/junit.functest.xml
 	$(GOTESTSUM) --junitfile $(ARTIFACTS)/junit.functest.xml -- ./test/e2e/ -v -ginkgo.v --migration-controller-namespace=$(MIGRATION_CONTROLLER_NAMESPACE) --kubectl-path=$(KUBECTL_PATH) --test-kubeconfig=$(KUBECONFIG) --kubeurl=$(KUBEURL)
 
@@ -163,33 +163,29 @@ build: manifests generate fmt vet ## Build manager binary.
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go
 
-# If you wish to build the manager image targeting other platforms you can use the --platform flag.
-# (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
-# More info: https://docs.docker.com/develop/develop-images/build_enhancements/
-.PHONY: docker-build
-docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${DOCKER_REPO_IMAGE} .
+GOOS?=linux
+GOARCH?=amd64
+BUILDAH_PLATFORM_FLAG?=--platform $(GOOS)/$(GOARCH)
+DOCKER_REPO_IMAGE=$(DOCKER_REPO)/$(IMG):$(GOARCH)
+TAG?=latest
+BUILDAH_TLS_VERIFY?=true
 
-.PHONY: docker-push
-docker-push: ## Push docker image with the manager.
-	$(CONTAINER_TOOL) push ${DOCKER_PUSH_FLAGS} ${DOCKER_REPO_IMAGE}
+.PHONY: buildah-image
+buildah-image: ## Build the image with the manager using buildah.
+	buildah build $(BUILDAH_PLATFORM_FLAG) -t $(DOCKER_REPO_IMAGE) -f Dockerfile .
 
-# PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
-# architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
-# - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/
-# - have enabled BuildKit. More info: https://docs.docker.com/develop/develop-images/build_enhancements/
-# - be able to push the image to your registry (i.e. if you do not set a valid value via IMG=<myregistry/image:<tag>> then the export will fail)
-# To adequately provide solutions that are compatible with multiple platforms, you should consider using this option.
-PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
-.PHONY: docker-buildx
-docker-buildx: ## Build and push docker image for the manager for cross-platform support
-	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
-	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
-	- $(CONTAINER_TOOL) buildx create --name kubevirt-migration-controller-builder
-	$(CONTAINER_TOOL) buildx use kubevirt-migration-controller-builder
-	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
-	- $(CONTAINER_TOOL) buildx rm kubevirt-migration-controller-builder
-	rm Dockerfile.cross
+.PHONY: buildah-manifest
+buildah-manifest: buildah-image ## Create a manifest for the image using buildah.
+	buildah manifest create $(DOCKER_REPO)/$(IMG):local
+	buildah manifest add --arch $(GOARCH) $(DOCKER_REPO)/$(IMG):local containers-storage:$(DOCKER_REPO_IMAGE)
+
+.PHONY: buildah-manifest-push
+buildah-manifest-push: buildah-manifest-clean buildah-manifest ## Push the manifest for the image using buildah.
+	buildah manifest push --tls-verify=${BUILDAH_TLS_VERIFY} --all $(DOCKER_REPO)/$(IMG):local docker://$(DOCKER_REPO_IMAGE):$(TAG)
+
+.PHONY: buildah-manifest-clean
+buildah-manifest-clean: ## Clean the manifest for the image using buildah.
+	-buildah manifest rm $(DOCKER_REPO)/$(IMG):local
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
@@ -251,7 +247,7 @@ CLIENT_GEN_VERSION ?= v0.34.1
 ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller-runtime | awk -F'[v.]' '{printf "release-%d.%d", $$2, $$3}')
 #ENVTEST_K8S_VERSION is the version of Kubernetes to use for setting up ENVTEST binaries (i.e. 1.31)
 ENVTEST_K8S_VERSION ?= $(shell go list -m -f "{{ .Version }}" k8s.io/api | awk -F'[v.]' '{printf "1.%d", $$3}')
-GOLANGCI_LINT_VERSION ?= v1.63.4
+GOLANGCI_LINT_VERSION ?= v1.64.8
 GOTESTSUM_VERSION ?= v1.13.0
 GINKGO_VERSION ?= v2.27.2
 

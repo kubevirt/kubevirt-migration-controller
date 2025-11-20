@@ -3,7 +3,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: controller
-  namespace: system
+  namespace: kubevirt
   labels:
     control-plane: controller
     app.kubernetes.io/name: kubevirt-migration-controller

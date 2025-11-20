@@ -5,4 +5,3 @@ kind: Kustomization
 images:
 - name: controller
   newName: registry:5000/kubevirt-migration-controller
-  newTag: latest

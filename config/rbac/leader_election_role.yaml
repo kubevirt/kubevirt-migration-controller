@@ -6,19 +6,8 @@ metadata:
     app.kubernetes.io/name: kubevirt-migration-controller
     app.kubernetes.io/managed-by: kustomize
   name: leader-election-role
+  namespace: kubevirt
 rules:
-- apiGroups:
-  - ""
-  resources:
-  - configmaps
-  verbs:
-  - get
-  - list
-  - watch
-  - create
-  - update
-  - patch
-  - delete
 - apiGroups:
   - coordination.k8s.io
   resources:
