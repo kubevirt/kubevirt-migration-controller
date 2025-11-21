@@ -58,8 +58,6 @@ type VirtualMachineStorageMigrationPlanNamespaceStatus struct {
 // MultiNamespaceVirtualMachineStorageMigrationPlan is the Schema for the multinamespacevmstoragemigrationplans API
 // +genclient
 // +k8s:openapi-gen=true
-// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].status"
-// +kubebuilder:printcolumn:name="Progressing",type=string,JSONPath=".status.conditions[?(@.type=='Progressing')].status"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 type MultiNamespaceVirtualMachineStorageMigrationPlan struct {
 	metav1.TypeMeta   `json:",inline"`

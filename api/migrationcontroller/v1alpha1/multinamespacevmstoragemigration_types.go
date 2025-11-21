@@ -47,7 +47,7 @@ type MultiNamespaceVirtualMachineStorageMigrationNamespaceStatus struct {
 // VirtualMachineStorageMigration is the Schema for the virtualmachinestoragemigrations API
 // +k8s:openapi-gen=true
 // +genclient
-// +kubebuilder:printcolumn:name="Plan",type=string,JSONPath=".spec.virtualMachineStorageMigrationPlanRef.name"
+// +kubebuilder:printcolumn:name="Plan",type=string,JSONPath=".spec.multiNamespaceVirtualMachineStorageMigrationPlanRef.name"
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 type MultiNamespaceVirtualMachineStorageMigration struct {
