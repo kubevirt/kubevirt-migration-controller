@@ -15,7 +15,7 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.virtualMachineStorageMigrationPlanRef.name
+    - jsonPath: .spec.multiNamespaceVirtualMachineStorageMigrationPlanRef.name
       name: Plan
       type: string
     - jsonPath: .status.phase
