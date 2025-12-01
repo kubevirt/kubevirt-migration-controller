@@ -137,6 +137,11 @@ spec:
                 description: The status of the migrations in the namespaces.
                 items:
                   properties:
+                    cancelledMigrations:
+                      description: The cancelled migrations.
+                      items:
+                        type: string
+                      type: array
                     completedMigrations:
                       description: The completed migrations.
                       items:

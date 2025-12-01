@@ -93,6 +93,7 @@ func (r *StorageMigPlanReconciler) validateLiveMigrationPossible(ctx context.Con
 }
 
 func (r *StorageMigPlanReconciler) validateStorageMigrationPossible(ctx context.Context, plan *migrations.VirtualMachineStorageMigrationPlan) error {
+	existingStatusVMMap := r.getExistingStatusVMMap(plan)
 	// Loop over the virtual machines in the plan and validate if the storage migration is possible.
 	plan.Status.ReadyMigrations = make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, 0)
 	plan.Status.InvalidMigrations = make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, 0)
@@ -115,7 +116,7 @@ func (r *StorageMigPlanReconciler) validateStorageMigrationPossible(ctx context.
 			continue
 		}
 
-		statusVM, err := r.createStatusVM(ctx, &vm, plan.Namespace, plan.Status.Suffix)
+		statusVM, err := r.createStatusVM(ctx, &vm, plan)
 		if err != nil {
 			return err
 		}
@@ -125,6 +126,10 @@ func (r *StorageMigPlanReconciler) validateStorageMigrationPossible(ctx context.
 			continue
 		}
 
+		if existingStatusVM, ok := existingStatusVMMap[vm.Name]; ok {
+			// Keep the source PVC from the existing status VM.
+			statusVM.SourcePVCs = existingStatusVM.SourcePVCs
+		}
 		// Add the virtual machine to the appropriate list based on the migration status
 		switch migrationStatus {
 		case notStarted:
@@ -177,18 +182,39 @@ func (r *StorageMigPlanReconciler) validateStorageMigrationPossible(ctx context.
 	return nil
 }
 
-func (r *StorageMigPlanReconciler) createStatusVM(ctx context.Context, migPlanVM *migrations.VirtualMachineStorageMigrationPlanVirtualMachine, namespace string, suffix *string) (migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, error) {
+func (r *StorageMigPlanReconciler) getExistingStatusVMMap(plan *migrations.VirtualMachineStorageMigrationPlan) map[string]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine {
+	existingStatusVMMap := make(map[string]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine)
+	for _, vm := range plan.Status.ReadyMigrations {
+		existingStatusVMMap[vm.Name] = vm
+	}
+	for _, vm := range plan.Status.InProgressMigrations {
+		existingStatusVMMap[vm.Name] = vm
+	}
+	for _, vm := range plan.Status.FailedMigrations {
+		existingStatusVMMap[vm.Name] = vm
+	}
+	for _, vm := range plan.Status.CompletedMigrations {
+		existingStatusVMMap[vm.Name] = vm
+	}
+	for _, vm := range plan.Status.InvalidMigrations {
+		existingStatusVMMap[vm.Name] = vm
+	}
+
+	return existingStatusVMMap
+}
+
+func (r *StorageMigPlanReconciler) createStatusVM(ctx context.Context, migPlanVM *migrations.VirtualMachineStorageMigrationPlanVirtualMachine, plan *migrations.VirtualMachineStorageMigrationPlan) (migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, error) {
 	statusVM := migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
 		VirtualMachineStorageMigrationPlanVirtualMachine: *migPlanVM.DeepCopy(),
 	}
 
-	vm, err := componenthelpers.GetVirtualMachineFromName(ctx, r.Client, migPlanVM.Name, namespace)
+	vm, err := componenthelpers.GetVirtualMachineFromName(ctx, r.Client, migPlanVM.Name, plan.Namespace)
 	if err != nil {
 		return migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{}, err
 	}
 
 	for i, pvc := range statusVM.TargetMigrationPVCs {
-		sourcePVC, err := r.getSourcePVC(ctx, vm, pvc.VolumeName)
+		sourcePVC, err := r.getSourcePVC(ctx, vm, pvc.VolumeName, plan)
 		if err != nil {
 			return migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{}, err
 		}
@@ -202,7 +228,7 @@ func (r *StorageMigPlanReconciler) createStatusVM(ctx context.Context, migPlanVM
 			SourcePVC:  *sourcePVC,
 		})
 		currentTarget := statusVM.TargetMigrationPVCs[i].DestinationPVC.Name
-		newTargetName, err := r.targetPVCName(currentTarget, sourcePVC.Name, suffix)
+		newTargetName, err := r.targetPVCName(currentTarget, sourcePVC.Name, plan.Status.Suffix)
 		if err != nil {
 			return migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{}, err
 		}
@@ -211,7 +237,7 @@ func (r *StorageMigPlanReconciler) createStatusVM(ctx context.Context, migPlanVM
 	return statusVM, nil
 }
 
-func (r *StorageMigPlanReconciler) getSourcePVC(ctx context.Context, vm *virtv1.VirtualMachine, volumeName string) (*corev1.PersistentVolumeClaim, error) {
+func (r *StorageMigPlanReconciler) getSourcePVC(ctx context.Context, vm *virtv1.VirtualMachine, volumeName string, plan *migrations.VirtualMachineStorageMigrationPlan) (*corev1.PersistentVolumeClaim, error) {
 	pvcName := ""
 	for _, volume := range vm.Spec.Template.Spec.Volumes {
 		if volume.Name == volumeName {
@@ -229,6 +255,14 @@ func (r *StorageMigPlanReconciler) getSourcePVC(ctx context.Context, vm *virtv1.
 		r.Log.V(2).Info("No source PVC found for volume", "volume", volumeName, "vm", vm.Name)
 		return nil, nil
 	}
+	migrationStatus := r.getMigrationStatus(ctx, plan)
+	if migrationStatus != notStarted {
+		// If the volume is already switched, get the source PVC name from the volume update state.
+		if sourcePVCName := r.getSourcePVCNameFromVolumeUpdateState(vm, pvcName); sourcePVCName != "" {
+			pvcName = sourcePVCName
+		}
+	}
+	r.Log.V(5).Info("source PVC name", "sourcePVCName", pvcName)
 	pvc := &corev1.PersistentVolumeClaim{}
 	if err := r.Client.Get(ctx, types.NamespacedName{Namespace: vm.Namespace, Name: pvcName}, pvc); err != nil {
 		if k8serrors.IsNotFound(err) {
@@ -237,6 +271,19 @@ func (r *StorageMigPlanReconciler) getSourcePVC(ctx context.Context, vm *virtv1.
 		return nil, err
 	}
 	return pvc, nil
+}
+
+func (r *StorageMigPlanReconciler) getSourcePVCNameFromVolumeUpdateState(vm *virtv1.VirtualMachine, pvcName string) string {
+	sourcePVCName := pvcName
+	if vm.Status.VolumeUpdateState != nil && vm.Status.VolumeUpdateState.VolumeMigrationState != nil {
+		for _, volume := range vm.Status.VolumeUpdateState.VolumeMigrationState.MigratedVolumes {
+			if volume.DestinationPVCInfo.ClaimName == pvcName {
+				sourcePVCName = volume.SourcePVCInfo.ClaimName
+				break
+			}
+		}
+	}
+	return sourcePVCName
 }
 
 func (r *StorageMigPlanReconciler) targetPVCName(name *string, sourcePVCName string, suffix *string) (string, error) {

@@ -101,6 +101,11 @@ spec:
             description: VirtualMachineStorageMigrationStatus defines the observed
               state of VirtualMachineStorageMigration
             properties:
+              cancelledMigrations:
+                description: The cancelled migrations.
+                items:
+                  type: string
+                type: array
               completedMigrations:
                 description: The completed migrations.
                 items:
