@@ -208,7 +208,18 @@ func (r *StorageMigPlanReconciler) shouldUpdateRefresh(plan *migrations.VirtualM
 		return false
 	}
 	if _, ok := plan.Annotations[RefreshEndTimeAnnotation]; ok {
-		return false
+		var startTime time.Time
+		var endTime time.Time
+		var err error
+		if startTime, err = time.Parse(time.RFC3339Nano, plan.Annotations[RefreshStartTimeAnnotation]); err != nil {
+			return true
+		}
+		if endTime, err = time.Parse(time.RFC3339Nano, plan.Annotations[RefreshEndTimeAnnotation]); err != nil {
+			return true
+		}
+		if endTime.After(startTime) {
+			return false
+		}
 	}
 	return true
 }

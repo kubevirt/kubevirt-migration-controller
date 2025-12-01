@@ -43,6 +43,7 @@ const (
 	LiveMigrationFailed                          Phase = "LiveMigrationFailed"
 	Canceling                                    Phase = "Canceling"
 	Canceled                                     Phase = "Canceled"
+	CleanupCancelledMigrations                   Phase = "CleanupCancelledMigrations"
 	Completed                                    Phase = "Completed"
 	CleanupMigrationResources                    Phase = "CleanupMigrationResources"
 )
@@ -62,6 +63,8 @@ type VirtualMachineStorageMigrationStatus struct {
 	RunningMigrations []RunningVirtualMachineMigration `json:"runningMigrations,omitempty"`
 	// The completed migrations.
 	CompletedMigrations []string `json:"completedMigrations,omitempty"`
+	// The cancelled migrations.
+	CancelledMigrations []string `json:"cancelledMigrations,omitempty"`
 }
 
 // RunningVirtualMachineMigration has the name of the VirtualMachine and the progress of the migration.

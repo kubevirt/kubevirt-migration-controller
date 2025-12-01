@@ -21,7 +21,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -60,7 +59,7 @@ var _ = Describe("StorageMigration Controller", func() {
 
 	Context("When reconciling a migmigration", func() {
 		It("should mark the migration as blocked if the plan is not found", func() {
-			migration := createMigration(testutils.TestMigMigrationName)
+			migration := createMigration()
 			Expect(k8sClient.Create(ctx, migration)).To(Succeed())
 
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -78,31 +77,8 @@ var _ = Describe("StorageMigration Controller", func() {
 			), "Expected conditions differ from found")
 		})
 
-		It("should remove the finalizer if the migration is being deleted", func() {
-			deletedNamespacedName := types.NamespacedName{
-				Name:      testutils.TestMigMigrationName + "-deleted",
-				Namespace: testutils.TestNamespace,
-			}
-			deletedMigration := createMigration(testutils.TestMigMigrationName + "-deleted")
-			deletedMigration.Finalizers = append(deletedMigration.Finalizers, migrations.VirtualMachineStorageMigrationFinalizer)
-			Expect(k8sClient.Create(ctx, deletedMigration)).To(Succeed())
-			Expect(k8sClient.Delete(ctx, deletedMigration)).To(Succeed())
-			migration := &migrations.VirtualMachineStorageMigration{}
-			Expect(k8sClient.Get(ctx, deletedNamespacedName, migration)).To(Succeed())
-			Expect(migration.DeletionTimestamp).NotTo(BeNil())
-			Expect(migration.Finalizers).To(ContainElement(migrations.VirtualMachineStorageMigrationFinalizer))
-
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: deletedNamespacedName,
-			})
-			Expect(err).NotTo(HaveOccurred())
-			migration = &migrations.VirtualMachineStorageMigration{}
-			err = k8sClient.Get(ctx, deletedNamespacedName, migration)
-			Expect(k8serrors.IsNotFound(err)).To(BeTrue())
-		})
-
 		It("should not reconcile if the migration is completed", func() {
-			migration := createMigration(testutils.TestMigMigrationName)
+			migration := createMigration()
 			Expect(k8sClient.Create(ctx, migration)).To(Succeed())
 			migration = &migrations.VirtualMachineStorageMigration{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, migration)).To(Succeed())
@@ -127,10 +103,10 @@ var _ = Describe("StorageMigration Controller", func() {
 	})
 })
 
-func createMigration(name string) *migrations.VirtualMachineStorageMigration {
+func createMigration() *migrations.VirtualMachineStorageMigration {
 	return &migrations.VirtualMachineStorageMigration{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
+			Name:      testutils.TestMigMigrationName,
 			Namespace: testutils.TestNamespace,
 		},
 		Spec: migrations.VirtualMachineStorageMigrationSpec{

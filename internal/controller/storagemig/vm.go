@@ -275,7 +275,10 @@ func (t *Task) refreshCompletedVirtualMachines(ctx context.Context) (bool, error
 			return false, err
 		} else {
 			if endTime.After(startTime) {
+				log.V(5).Info("refresh completed", "endTime", endTime, "startTime", startTime)
 				return true, nil
+			} else {
+				log.V(5).Info("refresh not completed", "endTime", endTime, "startTime", startTime)
 			}
 		}
 	}
