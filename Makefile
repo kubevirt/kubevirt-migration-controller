@@ -181,7 +181,7 @@ buildah-manifest: buildah-image ## Create a manifest for the image using buildah
 
 .PHONY: buildah-manifest-push
 buildah-manifest-push: buildah-manifest-clean buildah-manifest ## Push the manifest for the image using buildah.
-	buildah manifest push --tls-verify=${BUILDAH_TLS_VERIFY} --all $(DOCKER_REPO)/$(IMG):local docker://$(DOCKER_REPO_IMAGE):$(TAG)
+	buildah manifest push --tls-verify=${BUILDAH_TLS_VERIFY} --all $(DOCKER_REPO)/$(IMG):local docker://$(DOCKER_REPO)/$(IMG):$(TAG)
 
 .PHONY: buildah-manifest-clean
 buildah-manifest-clean: ## Clean the manifest for the image using buildah.
