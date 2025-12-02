@@ -45,6 +45,7 @@ type MultiNamespaceVirtualMachineStorageMigrationPlanStatus struct {
 	Conditions `json:",inline"`
 }
 
+// VirtualMachineStorageMigrationPlanNamespaceStatus defines the status of the plan in the namespace.
 type VirtualMachineStorageMigrationPlanNamespaceStatus struct {
 	// The name of the namespace to migrate.
 	Name string `json:"name"`

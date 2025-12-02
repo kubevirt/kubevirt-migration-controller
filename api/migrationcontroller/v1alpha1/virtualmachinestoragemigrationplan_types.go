@@ -31,35 +31,50 @@ type VirtualMachineStorageMigrationPlanSpec struct {
 	VirtualMachines []VirtualMachineStorageMigrationPlanVirtualMachine `json:"virtualMachines"`
 }
 
+// VirtualMachineStorageMigrationPlanVirtualMachine defines the VirtualMachine to migrate and the PVCs to migrate.
 type VirtualMachineStorageMigrationPlanVirtualMachine struct {
 	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:Pattern=`^[a-z]([-a-z0-9]*[a-z0-9])?$`
 	// The name of the virtual machine to migrate.
-	Name                string                                                 `json:"name"`
+	Name string `json:"name"`
+	// A list of PVCs associated with the VirtualMachine to migrate.
 	TargetMigrationPVCs []VirtualMachineStorageMigrationPlanTargetMigrationPVC `json:"targetMigrationPVCs"`
 }
 
+// VirtualMachineStorageMigrationPlanTargetMigrationPVC defines the PVC to migrate to.
 type VirtualMachineStorageMigrationPlanTargetMigrationPVC struct {
-	VolumeName     string                                           `json:"volumeName"`
+	// The name of the volume in the VirtualMachine to migrate.
+	VolumeName string `json:"volumeName"`
+	// The destination PVC to migrate to.
 	DestinationPVC VirtualMachineStorageMigrationPlanDestinationPVC `json:"destinationPVC"`
 }
 
+// VirtualMachineStorageMigrationPlanStatusVirtualMachine defines the status of the VirtualMachine to migrate.
 type VirtualMachineStorageMigrationPlanStatusVirtualMachine struct {
+	// The VirtualMachine to migrate.
 	VirtualMachineStorageMigrationPlanVirtualMachine `json:",inline"`
-	SourcePVCs                                       []VirtualMachineStorageMigrationPlanSourcePVC `json:"sourcePVCs"`
+	// A list of source PVCs currently used by the VirtualMachine.
+	SourcePVCs []VirtualMachineStorageMigrationPlanSourcePVC `json:"sourcePVCs"`
 }
 
+// VirtualMachineStorageMigrationPlanSourcePVC defines the source PVC used by the VirtualMachine.
 type VirtualMachineStorageMigrationPlanSourcePVC struct {
-	VolumeName string                       `json:"volumeName"`
-	Name       string                       `json:"name"`
-	Namespace  string                       `json:"namespace"`
-	SourcePVC  corev1.PersistentVolumeClaim `json:"sourcePVC"`
+	// The name of the volume in the VirtualMachine.
+	VolumeName string `json:"volumeName"`
+	// The name of the source PVC.
+	Name string `json:"name"`
+	// The namespace of the source PVC.
+	Namespace string `json:"namespace"`
+	// The source PVC.
+	SourcePVC corev1.PersistentVolumeClaim `json:"sourcePVC"`
 }
 
 // +kubebuilder:validation:Enum=ReadWriteOnce;ReadOnlyMany;ReadWriteMany;Auto
+// The access mode of the source PVC. If set to Auto, the access mode will be looked up from the storage class storage profile.
 type VirtualMachineStorageMigrationPlanAccessMode string
 
+// VirtualMachineStorageMigrationPlanDestinationPVC the definition of the destination PVC.
 type VirtualMachineStorageMigrationPlanDestinationPVC struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MaxLength=63
@@ -94,7 +109,7 @@ type VirtualMachineStorageMigrationPlanStatus struct {
 	// The migrations that have failed.
 	FailedMigrations []VirtualMachineStorageMigrationPlanStatusVirtualMachine `json:"failedMigrations,omitempty"`
 
-	// The suffix to automatically append to the PVC name.
+	// The suffix to automatically append to the source PVC name. If the target name is not provided. This will replace the suffix "-new" or "-mig-xxxx" if present on the source PVC name.
 	Suffix *string `json:"suffix,omitempty"`
 	// The conditions of the migration plan.
 	Conditions `json:",inline"`
