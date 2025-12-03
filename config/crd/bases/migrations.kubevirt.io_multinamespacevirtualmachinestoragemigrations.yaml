@@ -138,6 +138,7 @@ spec:
                 items:
                   properties:
                     completedMigrations:
+                      description: The completed migrations.
                       items:
                         type: string
                       type: array
@@ -174,6 +175,7 @@ spec:
                         type: object
                       type: array
                     errors:
+                      description: The errors occurred during the migration.
                       items:
                         type: string
                       type: array
@@ -181,14 +183,19 @@ spec:
                       description: The name of the namespace to migrate.
                       type: string
                     phase:
-                      description: Phase defines phase in the migration
+                      description: The current phase of the migration.
                       type: string
                     runningMigrations:
+                      description: The running migrations.
                       items:
+                        description: RunningVirtualMachineMigration has the name of
+                          the VirtualMachine and the progress of the migration.
                         properties:
                           name:
+                            description: The name of the VirtualMachine.
                             type: string
                           progress:
+                            description: The progress of the migration.
                             type: string
                         required:
                         - name
