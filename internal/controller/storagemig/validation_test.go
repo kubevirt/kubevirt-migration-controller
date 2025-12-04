@@ -55,7 +55,7 @@ var _ = Describe("StorageMigration Validation", func() {
 
 	Context("When validating a storage migration", func() {
 		It("should return an error condition if the migration is not owned by a plan, because of mismatching uids", func() {
-			migration := createMigration(testutils.TestMigMigrationName)
+			migration := createMigration()
 			migration.Spec.VirtualMachineStorageMigrationPlanRef.UID = "123"
 			Expect(k8sClient.Create(ctx, migration)).To(Succeed())
 			migplan := testutils.NewVirtualMachineStorageMigrationPlan(testutils.TestMigPlanName, testutils.NewVirtualMachine(testutils.TestVMName, testutils.TestNamespace, testutils.TestVolumeName, testutils.TestSourcePVCName))
@@ -96,7 +96,7 @@ var _ = Describe("StorageMigration Validation", func() {
 		})
 
 		It("should return an error condition if the migration plan is has critical conditions", func() {
-			migration := createMigration(testutils.TestMigMigrationName)
+			migration := createMigration()
 			Expect(k8sClient.Create(ctx, migration)).To(Succeed())
 			migplan := testutils.NewVirtualMachineStorageMigrationPlan(testutils.TestMigPlanName, testutils.NewVirtualMachine(testutils.TestVMName, testutils.TestNamespace, testutils.TestVolumeName, testutils.TestSourcePVCName))
 			Expect(k8sClient.Create(ctx, migplan)).To(Succeed())
