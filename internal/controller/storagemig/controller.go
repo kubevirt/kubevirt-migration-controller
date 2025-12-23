@@ -50,7 +50,8 @@ const (
 // MigMigrationReconciler reconciles a MigMigration object
 type StorageMigrationReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	UncachedClient client.Reader
+	Scheme         *runtime.Scheme
 	record.EventRecorder
 	Log    logr.Logger
 	Config *rest.Config
