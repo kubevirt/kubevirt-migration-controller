@@ -43,16 +43,17 @@ const (
 )
 
 type Task struct {
-	Config        *rest.Config
-	Scheme        *runtime.Scheme
-	Log           logr.Logger
-	Client        k8sclient.Client
-	Owner         *migrations.VirtualMachineStorageMigration
-	Plan          *migrations.VirtualMachineStorageMigrationPlan
-	Requeue       time.Duration
-	Errors        []string
-	PrometheusAPI prometheusv1.API
-	PromQuery     func(ctx context.Context, query string, ts time.Time, opts ...prometheusv1.Option) (model.Value, prometheusv1.Warnings, error)
+	Config         *rest.Config
+	Scheme         *runtime.Scheme
+	Log            logr.Logger
+	Client         k8sclient.Client
+	UncachedClient k8sclient.Reader
+	Owner          *migrations.VirtualMachineStorageMigration
+	Plan           *migrations.VirtualMachineStorageMigrationPlan
+	Requeue        time.Duration
+	Errors         []string
+	PrometheusAPI  prometheusv1.API
+	PromQuery      func(ctx context.Context, query string, ts time.Time, opts ...prometheusv1.Option) (model.Value, prometheusv1.Warnings, error)
 }
 
 // Run the task.

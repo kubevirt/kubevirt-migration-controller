@@ -47,9 +47,10 @@ var _ = Describe("StorageMigration tasks", func() {
 
 	BeforeEach(func() {
 		controllerReconciler = &StorageMigrationReconciler{
-			Client: k8sClient,
-			Scheme: k8sClient.Scheme(),
-			Config: cfg,
+			Client:         k8sClient,
+			UncachedClient: k8sClient,
+			Scheme:         k8sClient.Scheme(),
+			Config:         cfg,
 		}
 	})
 
