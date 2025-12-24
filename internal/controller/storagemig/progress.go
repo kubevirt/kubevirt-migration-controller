@@ -138,7 +138,7 @@ func (t *Task) buildSourcePrometheusEndPointURL(ctx context.Context) (string, er
 func (t *Task) getPrometheusURLFromConfig(ctx context.Context) (string, error) {
 	migControllerConfigMap := &corev1.ConfigMap{}
 	controllerNamespace := os.Getenv("CONTROLLER_NAMESPACE")
-	if err := t.Client.Get(ctx, k8sclient.ObjectKey{Namespace: controllerNamespace, Name: "migration-controller"}, migControllerConfigMap); err != nil {
+	if err := t.UncachedClient.Get(ctx, k8sclient.ObjectKey{Namespace: controllerNamespace, Name: "migration-controller"}, migControllerConfigMap); err != nil {
 		if k8serrors.IsNotFound(err) {
 			return "", nil
 		}
