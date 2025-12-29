@@ -27,12 +27,11 @@ func (r *StorageMigrationReconciler) migrate(ctx context.Context, plan *migratio
 	log := r.Log
 	// Run
 	task := Task{
-		Client:         r.Client,
-		UncachedClient: r.UncachedClient,
-		Owner:          migration,
-		Plan:           plan,
-		Log:            log,
-		Config:         r.Config,
+		Client: r.Client,
+		Owner:  migration,
+		Plan:   plan,
+		Log:    log,
+		Config: r.Config,
 	}
 
 	log.V(5).Info("Calling task.Run")

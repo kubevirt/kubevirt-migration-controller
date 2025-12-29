@@ -17,27 +17,36 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
+	v1 "k8s.io/api/core/v1"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	ocpconfigv1 "github.com/openshift/api/config/v1"
 	routev1 "github.com/openshift/api/route/v1"
 	virtv1 "kubevirt.io/api/core/v1"
 	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
@@ -60,6 +69,7 @@ func init() {
 	utilruntime.Must(virtv1.AddToScheme(scheme))
 	utilruntime.Must(cdiv1.AddToScheme(scheme))
 	utilruntime.Must(routev1.AddToScheme(scheme))
+	utilruntime.Must(ocpconfigv1.AddToScheme(scheme))
 	utilruntime.Must(migrations.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
@@ -190,9 +200,19 @@ func main() {
 
 	cfg := ctrl.GetConfigOrDie()
 	cfg.WarningHandler = rest.NoWarnings{}
+	// client.New() returns a client without cache
+	// since we don't have a cached client before manager init
+	apiClient, err := client.New(cfg, client.Options{
+		Scheme: scheme,
+	})
+	if err != nil {
+		setupLog.Error(err, "Unable to get uncached client")
+		os.Exit(1)
+	}
 
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:                        scheme,
+		Cache:                         getCacheOptions(apiClient),
 		Metrics:                       metricsServerOptions,
 		WebhookServer:                 webhookServer,
 		HealthProbeBindAddress:        probeAddr,
@@ -215,11 +235,10 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&storagemig.StorageMigrationReconciler{
-		Client:         mgr.GetClient(),
-		UncachedClient: mgr.GetAPIReader(),
-		Scheme:         mgr.GetScheme(),
-		EventRecorder:  mgr.GetEventRecorderFor("storagemig-controller"),
-		Log:            ctrl.Log.WithName("storagemig-controller"),
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		EventRecorder: mgr.GetEventRecorderFor("storagemig-controller"),
+		Log:           ctrl.Log.WithName("storagemig-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "StorageMigration")
 		os.Exit(1)
@@ -274,4 +293,67 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// Restricts some types in the cache's ListWatch to specific fields/labels per GVK at the specified object,
+// other types will continue working normally.
+// Note: objects you read once with the controller runtime client are cached.
+func getCacheOptions(apiClient client.Client) cache.Options {
+	ns := getNamespace("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+
+	cacheOptions := cache.Options{
+		ByObject: map[client.Object]cache.ByObject{
+			&v1.ConfigMap{}: {
+				Field: fields.Set{
+					"metadata.namespace": ns,
+					"metadata.name":      "migration-controller",
+				}.AsSelector(),
+			},
+		},
+	}
+
+	cacheOptionsByObjectForOpenshift := map[client.Object]cache.ByObject{
+		&routev1.Route{}: {
+			Field: fields.Set{
+				"metadata.namespace": "openshift-monitoring",
+				"metadata.name":      "prometheus-k8s",
+			}.AsSelector(),
+		},
+	}
+
+	// Currently controller-runtime will fail if types in here are not installed in the cluster
+	// https://github.com/kubernetes-sigs/controller-runtime/issues/2456
+	if isOpenShift(apiClient) {
+		for k, v := range cacheOptionsByObjectForOpenshift {
+			cacheOptions.ByObject[k] = v
+		}
+	}
+
+	return cacheOptions
+}
+
+func isOpenShift(apiClient client.Client) bool {
+	clusterVersion := &ocpconfigv1.ClusterVersion{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "version",
+		},
+	}
+	if err := apiClient.Get(context.TODO(), client.ObjectKeyFromObject(clusterVersion), clusterVersion); err != nil {
+		if !meta.IsNoMatchError(err) {
+			setupLog.Error(err, "Error getting clusterVersion")
+			os.Exit(1)
+		}
+		return false
+	}
+
+	return true
+}
+
+func getNamespace(path string) string {
+	if data, err := os.ReadFile(path); err == nil {
+		if ns := strings.TrimSpace(string(data)); len(ns) > 0 {
+			return ns
+		}
+	}
+	return "kubevirt-migration"
 }
