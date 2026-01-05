@@ -40,5 +40,6 @@ func (r *StorageMigrationReconciler) migrate(ctx context.Context, plan *migratio
 		return task.Requeue, err
 	}
 
+	log.Info("Task.Run completed", "phase", task.Owner.Status.Phase, "requeue", task.Requeue)
 	return task.Requeue, nil
 }
