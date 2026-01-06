@@ -1,3 +1,5 @@
 v0.0.2
-
 fix release script
+
+v0.0.3
+multi arch builds, no emulation
