@@ -100,7 +100,14 @@ func (t *Task) determineDataVolumeSize(ctx context.Context, sourcePVC *corev1.Pe
 	if dataVolume.Spec.PVC != nil {
 		return dataVolume.Spec.PVC.Resources.Requests[corev1.ResourceStorage], nil
 	} else if dataVolume.Spec.Storage != nil {
-		return dataVolume.Spec.Storage.Resources.Requests[corev1.ResourceStorage], nil
+		size := dataVolume.Spec.Storage.Resources.Requests[corev1.ResourceStorage]
+		if sourcePVC.Spec.VolumeMode != nil && *sourcePVC.Spec.VolumeMode == corev1.PersistentVolumeBlock {
+			// Aligning this with MTC behavior for feature parity
+			// But ultimately this will be investigated for libvirt issues
+			// https://github.com/migtools/mig-controller/blob/a3ff4c526d36af61e20bcf542ea95d97cb9bedcf/pkg/controller/directvolumemigration/pvcs.go#L110
+			size = sourcePVC.Status.Capacity[corev1.ResourceStorage]
+		}
+		return size, nil
 	}
 	// Cannot figure out the size from the DataVolume, get the size from the PVC.
 	return sourcePVC.Spec.Resources.Requests[corev1.ResourceStorage], nil
