@@ -19,7 +19,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -74,7 +73,7 @@ func (t *Task) liveMigrateVM(ctx context.Context, planVM migrations.VirtualMachi
 			return err
 		} else {
 			pvcObjectMeta := apiPVC.ObjectMeta
-			if err := t.createTargetDV(ctx, pvc, size, pvcObjectMeta.Labels, pvcObjectMeta.Annotations); err != nil {
+			if err := t.createTargetDV(ctx, pvc, size, pvcObjectMeta.Labels); err != nil {
 				return err
 			}
 		}
@@ -118,21 +117,14 @@ func (t *Task) determineDataVolumeSize(ctx context.Context, sourcePVC *corev1.Pe
 	return sourcePVC.Spec.Resources.Requests[corev1.ResourceStorage], nil
 }
 
-func (t *Task) createTargetDV(ctx context.Context, pvc migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC, size resource.Quantity, labels, annotations map[string]string) error {
+func (t *Task) createTargetDV(ctx context.Context, pvc migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC, size resource.Quantity, labels map[string]string) error {
 	targetPvc := pvc.DestinationPVC
 
-	// Remove any cdi related annotations from the PVC
-	for k := range annotations {
-		if strings.HasPrefix(k, "cdi.kubevirt.io") || strings.HasPrefix(k, "volume.kubernetes.io/selected-node") {
-			delete(annotations, k)
-		}
-	}
 	dv := &cdiv1.DataVolume{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        *targetPvc.Name,
-			Namespace:   t.Owner.Namespace,
-			Labels:      labels,
-			Annotations: annotations,
+			Name:      *targetPvc.Name,
+			Namespace: t.Owner.Namespace,
+			Labels:    labels,
 		},
 		Spec: cdiv1.DataVolumeSpec{
 			Source: &cdiv1.DataVolumeSource{
