@@ -65,10 +65,15 @@ func (t *Task) liveMigrateVM(ctx context.Context, planVM migrations.VirtualMachi
 	// Create the target DVs for the PVCs.
 	for i, pvc := range planVM.TargetMigrationPVCs {
 		// Determine the size of the source PVC.
-		if size, err := t.determineSourcePVCSize(ctx, &planVM.SourcePVCs[i].SourcePVC); err != nil {
+		// Requires a get call since objectmeta is pruned on the embedded corev1.PersistentVolumeClaim in the planVM
+		apiPVC := &corev1.PersistentVolumeClaim{}
+		if err := t.Client.Get(ctx, types.NamespacedName{Namespace: planVM.SourcePVCs[i].Namespace, Name: planVM.SourcePVCs[i].Name}, apiPVC); err != nil {
+			return err
+		}
+		if size, err := t.determineSourcePVCSize(ctx, apiPVC); err != nil {
 			return err
 		} else {
-			pvcObjectMeta := planVM.SourcePVCs[i].SourcePVC.ObjectMeta
+			pvcObjectMeta := apiPVC.ObjectMeta
 			if err := t.createTargetDV(ctx, pvc, size, pvcObjectMeta.Labels, pvcObjectMeta.Annotations); err != nil {
 				return err
 			}

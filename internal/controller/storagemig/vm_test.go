@@ -212,30 +212,34 @@ var _ = Describe("StorageMigration DV Size Determination", func() {
 
 	DescribeTable("should determine correct size for target DV based on source PVC and DV",
 		func(pvcVolumeMode *corev1.PersistentVolumeMode, pvcCapacity, expectedSize resource.Quantity) {
-			By("creating the source DataVolume")
+			dvSpec := &cdiv1.DataVolumeSpec{
+				Source: &cdiv1.DataVolumeSource{Snapshot: &cdiv1.DataVolumeSourceSnapshot{}},
+				Storage: &cdiv1.StorageSpec{
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceStorage: resource.MustParse("5Gi"),
+						},
+					},
+				},
+			}
+			vm := createVirtualMachineWithDVTemplate(testVM, dvSpec)
+			Expect(k8sClient.Create(ctx, vm)).To(Succeed())
 			sourceDV := &cdiv1.DataVolume{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testSourceDV,
 					Namespace: testNamespace,
 				},
-				Spec: cdiv1.DataVolumeSpec{
-					Source: &cdiv1.DataVolumeSource{Snapshot: &cdiv1.DataVolumeSourceSnapshot{}},
-					Storage: &cdiv1.StorageSpec{
-						Resources: corev1.VolumeResourceRequirements{
-							Requests: corev1.ResourceList{
-								corev1.ResourceStorage: resource.MustParse("5Gi"),
-							},
-						},
-					},
-				},
+				Spec: *dvSpec,
 			}
 			Expect(k8sClient.Create(ctx, sourceDV)).To(Succeed())
 
-			By("creating the source PVC with DV owner reference")
 			sourcePVC := &corev1.PersistentVolumeClaim{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testSourceDV,
 					Namespace: testNamespace,
+					Labels: map[string]string{
+						"test": "label",
+					},
 					OwnerReferences: []metav1.OwnerReference{
 						{
 							APIVersion: "cdi.kubevirt.io/v1beta1",
@@ -256,37 +260,16 @@ var _ = Describe("StorageMigration DV Size Determination", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, sourcePVC)).To(Succeed())
-			By("updating the source PVC status with capacity")
 			sourcePVC.Status.Capacity = corev1.ResourceList{
 				corev1.ResourceStorage: pvcCapacity,
 			}
 			Expect(k8sClient.Status().Update(ctx, sourcePVC)).To(Succeed())
 
-			vm := &virtv1.VirtualMachine{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      testVM,
-					Namespace: testNamespace,
-				},
-				Spec: virtv1.VirtualMachineSpec{
-					Template: &virtv1.VirtualMachineInstanceTemplateSpec{
-						Spec: virtv1.VirtualMachineInstanceSpec{
-							Volumes: []virtv1.Volume{
-								{
-									Name: testVolume,
-									VolumeSource: virtv1.VolumeSource{
-										DataVolume: &virtv1.DataVolumeSource{
-											Name: testSourceDV,
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, vm)).To(Succeed())
+			// ObjectMeta is pruned on the embedded corev1.PersistentVolumeClaim in the planVM
+			// Simulate here as well
+			prunedSourcePVC := sourcePVC.DeepCopy()
+			prunedSourcePVC.ObjectMeta = metav1.ObjectMeta{}
 
-			By("calling liveMigrateVM to create the target DV")
 			planVM := migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
 				VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
 					Name: testVM,
@@ -305,18 +288,18 @@ var _ = Describe("StorageMigration DV Size Determination", func() {
 						VolumeName: testVolume,
 						Name:       testSourceDV,
 						Namespace:  testNamespace,
-						SourcePVC:  *sourcePVC,
+						SourcePVC:  *prunedSourcePVC,
 					},
 				},
 			}
 			Expect(t.liveMigrateVM(ctx, planVM)).To(Succeed())
 
-			By("verifying the target DV has the correct size")
 			targetDV := &cdiv1.DataVolume{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testTargetDV}, targetDV)).To(Succeed())
 			Expect(targetDV.Spec.Storage).ToNot(BeNil())
 			actualSize := targetDV.Spec.Storage.Resources.Requests[corev1.ResourceStorage]
 			Expect(actualSize.Cmp(expectedSize)).To(Equal(0), "target DV expected size %s but got %s", expectedSize.String(), actualSize.String())
+			Expect(targetDV.Labels).To(HaveKeyWithValue("test", "label"))
 		},
 		Entry("DV with Storage spec and Filesystem PVC uses DV storage request size",
 			ptr.To(corev1.PersistentVolumeFilesystem),
