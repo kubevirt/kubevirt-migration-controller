@@ -63,7 +63,7 @@ function update_github_release() {
         config/rbac/service_account.yaml \
         config/rbac/leader_election_role.yaml \
         config/rbac/leader_election_role_binding.yaml \
-        config/manager/controller.yaml \
+        config/manager/controller.yaml
 }
 
 function main() {

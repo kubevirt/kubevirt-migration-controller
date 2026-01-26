@@ -1,5 +1,7 @@
 # Build the manager binary
-FROM quay.io/konveyor/builder:v1.23.6 AS builder
+# Force building go binaries on amd64 with cross compilation, avoid emulation
+# Target distroless remains unaffected
+FROM --platform=linux/amd64 quay.io/konveyor/builder:v1.23.6 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 RUN mkdir -p /gopath
@@ -24,7 +26,7 @@ COPY pkg/ pkg/
 # was called. For example, if we call make docker-build in a local env which has the Apple Silicon M1 SO
 # the docker BUILDPLATFORM arg will be linux/arm64 when for Apple x86 it will be linux/amd64. Therefore,
 # by leaving it empty we can ensure that the container and binary shipped on it will have the same platform.
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-${GOARCH}} go build -a -o manager cmd/main.go
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
