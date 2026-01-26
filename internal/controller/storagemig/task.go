@@ -242,7 +242,7 @@ func (t *Task) isLiveMigrationCompleted(ctx context.Context, vmName string) (boo
 	}
 	var activeVMIM *virtv1.VirtualMachineInstanceMigration
 	for _, vmim := range vmimList.Items {
-		if vmim.Spec.VMIName == vmName && vmim.Status.Phase != virtv1.MigrationFailed && vmim.CreationTimestamp.After(t.Owner.CreationTimestamp.Time) {
+		if vmim.Spec.VMIName == vmName && vmim.Status.Phase != virtv1.MigrationFailed && !vmim.CreationTimestamp.Before(&t.Owner.CreationTimestamp) {
 			t.Log.V(5).Info("Found active VMIM", "vmim", vmim.Name)
 			activeVMIM = &vmim
 			break

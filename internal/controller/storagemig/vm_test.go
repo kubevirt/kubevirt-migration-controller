@@ -29,6 +29,7 @@ import (
 	virtv1 "kubevirt.io/api/core/v1"
 	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const (
@@ -177,3 +178,138 @@ func createVirtualMachineWithDVTemplate(name string, datavolumeSpec *cdiv1.DataV
 		},
 	}
 }
+
+var _ = Describe("StorageMigration DV Size Determination", func() {
+	var (
+		t *Task
+	)
+	ctx := context.Background()
+
+	BeforeEach(func() {
+		t = &Task{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Log:    logf.Log.WithName("test"),
+			Owner: &migrations.VirtualMachineStorageMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-migration",
+					Namespace: testNamespace,
+					UID:       types.UID("test-uid"),
+				},
+			},
+			Plan: &migrations.VirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-plan",
+					Namespace: testNamespace,
+				},
+			},
+		}
+	})
+
+	AfterEach(func() {
+		CleanupResources(ctx, k8sClient)
+	})
+
+	DescribeTable("should determine correct size for target DV based on source PVC and DV",
+		func(pvcVolumeMode *corev1.PersistentVolumeMode, pvcCapacity, expectedSize resource.Quantity) {
+			dvSpec := &cdiv1.DataVolumeSpec{
+				Source: &cdiv1.DataVolumeSource{Snapshot: &cdiv1.DataVolumeSourceSnapshot{}},
+				Storage: &cdiv1.StorageSpec{
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceStorage: resource.MustParse("5Gi"),
+						},
+					},
+				},
+			}
+			vm := createVirtualMachineWithDVTemplate(testVM, dvSpec)
+			Expect(k8sClient.Create(ctx, vm)).To(Succeed())
+			sourceDV := &cdiv1.DataVolume{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testSourceDV,
+					Namespace: testNamespace,
+				},
+				Spec: *dvSpec,
+			}
+			Expect(k8sClient.Create(ctx, sourceDV)).To(Succeed())
+
+			sourcePVC := &corev1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testSourceDV,
+					Namespace: testNamespace,
+					Labels: map[string]string{
+						"test": "label",
+					},
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: "cdi.kubevirt.io/v1beta1",
+							Kind:       "DataVolume",
+							Name:       testSourceDV,
+							UID:        sourceDV.UID,
+						},
+					},
+				},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					VolumeMode:  pvcVolumeMode,
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceStorage: resource.MustParse("1Gi"),
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, sourcePVC)).To(Succeed())
+			sourcePVC.Status.Capacity = corev1.ResourceList{
+				corev1.ResourceStorage: pvcCapacity,
+			}
+			Expect(k8sClient.Status().Update(ctx, sourcePVC)).To(Succeed())
+
+			// ObjectMeta is pruned on the embedded corev1.PersistentVolumeClaim in the planVM
+			// Simulate here as well
+			prunedSourcePVC := sourcePVC.DeepCopy()
+			prunedSourcePVC.ObjectMeta = metav1.ObjectMeta{}
+
+			planVM := migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+				VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+					Name: testVM,
+					TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+						{
+							VolumeName: testVolume,
+							DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+								Name:             ptr.To(testTargetDV),
+								StorageClassName: ptr.To(testStorageClass),
+							},
+						},
+					},
+				},
+				SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+					{
+						VolumeName: testVolume,
+						Name:       testSourceDV,
+						Namespace:  testNamespace,
+						SourcePVC:  *prunedSourcePVC,
+					},
+				},
+			}
+			Expect(t.liveMigrateVM(ctx, planVM)).To(Succeed())
+
+			targetDV := &cdiv1.DataVolume{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testTargetDV}, targetDV)).To(Succeed())
+			Expect(targetDV.Spec.Storage).ToNot(BeNil())
+			actualSize := targetDV.Spec.Storage.Resources.Requests[corev1.ResourceStorage]
+			Expect(actualSize.Cmp(expectedSize)).To(Equal(0), "target DV expected size %s but got %s", expectedSize.String(), actualSize.String())
+			Expect(targetDV.Labels).To(HaveKeyWithValue("test", "label"))
+		},
+		Entry("DV with Storage spec and Filesystem PVC uses DV storage request size",
+			ptr.To(corev1.PersistentVolumeFilesystem),
+			resource.MustParse("10Gi"),
+			resource.MustParse("5Gi"),
+		),
+		Entry("DV with Storage spec and Block PVC uses PVC status capacity",
+			ptr.To(corev1.PersistentVolumeBlock),
+			resource.MustParse("10Gi"),
+			resource.MustParse("10Gi"),
+		),
+	)
+})
