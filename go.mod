@@ -11,6 +11,7 @@ require (
 	github.com/onsi/ginkgo/v2 v2.27.2
 	github.com/onsi/gomega v1.38.2
 	github.com/openshift/api v0.0.0-20251111193948-50e2ece149d7
+	github.com/openshift/library-go v0.0.0-20250128093732-a69305d8f397
 	github.com/prometheus/client_golang v1.19.1
 	github.com/prometheus/common v0.55.0
 	k8s.io/api v0.34.1
