@@ -27,6 +27,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	virtv1 "kubevirt.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 )
 
 func CreateKubeVirtNamespace(ctx context.Context, client client.Client, namespace string) {
@@ -56,6 +58,7 @@ func CleanupResources(ctx context.Context, client client.Client) {
 	cleanupVirtualMachineStorageMigrationPlan(ctx, client)
 	cleanupVirtualMachineStorageMigration(ctx, client)
 	cleanupPVCs(ctx, client)
+	cleanupDataVolumes(ctx, client)
 	cleanupStorageClasses(ctx, client)
 }
 
@@ -107,6 +110,14 @@ func cleanupPVCs(ctx context.Context, client client.Client) {
 		pvc.Finalizers = []string{}
 		Expect(client.Update(ctx, &pvc)).To(Succeed())
 		Expect(client.Delete(ctx, &pvc)).To(Succeed())
+	}
+}
+
+func cleanupDataVolumes(ctx context.Context, client client.Client) {
+	DataVolumeList := &cdiv1.DataVolumeList{}
+	Expect(client.List(ctx, DataVolumeList)).To(Succeed())
+	for _, dv := range DataVolumeList.Items {
+		Expect(client.Delete(ctx, &dv)).To(Succeed())
 	}
 }
 
