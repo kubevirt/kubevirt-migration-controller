@@ -17,7 +17,10 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"github.com/openshift/library-go/pkg/build/naming"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kvalidation "k8s.io/apimachinery/pkg/util/validation"
 )
 
 const (
@@ -82,5 +85,5 @@ func init() {
 }
 
 func GetNamespacedPlanName(planName, namespace string) string {
-	return planName + "-" + namespace
+	return naming.GetName(planName, namespace, kvalidation.DNS1123SubdomainMaxLength)
 }
