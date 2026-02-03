@@ -19,7 +19,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -65,11 +64,16 @@ func (t *Task) liveMigrateVM(ctx context.Context, planVM migrations.VirtualMachi
 	// Create the target DVs for the PVCs.
 	for i, pvc := range planVM.TargetMigrationPVCs {
 		// Determine the size of the source PVC.
-		if size, err := t.determineSourcePVCSize(ctx, &planVM.SourcePVCs[i].SourcePVC); err != nil {
+		// Requires a get call since objectmeta is pruned on the embedded corev1.PersistentVolumeClaim in the planVM
+		apiPVC := &corev1.PersistentVolumeClaim{}
+		if err := t.Client.Get(ctx, types.NamespacedName{Namespace: planVM.SourcePVCs[i].Namespace, Name: planVM.SourcePVCs[i].Name}, apiPVC); err != nil {
+			return err
+		}
+		if size, err := t.determineSourcePVCSize(ctx, apiPVC); err != nil {
 			return err
 		} else {
-			pvcObjectMeta := planVM.SourcePVCs[i].SourcePVC.ObjectMeta
-			if err := t.createTargetDV(ctx, pvc, size, pvcObjectMeta.Labels, pvcObjectMeta.Annotations); err != nil {
+			pvcObjectMeta := apiPVC.ObjectMeta
+			if err := t.createTargetDV(ctx, pvc, size, pvcObjectMeta.Labels); err != nil {
 				return err
 			}
 		}
@@ -100,27 +104,27 @@ func (t *Task) determineDataVolumeSize(ctx context.Context, sourcePVC *corev1.Pe
 	if dataVolume.Spec.PVC != nil {
 		return dataVolume.Spec.PVC.Resources.Requests[corev1.ResourceStorage], nil
 	} else if dataVolume.Spec.Storage != nil {
-		return dataVolume.Spec.Storage.Resources.Requests[corev1.ResourceStorage], nil
+		size := dataVolume.Spec.Storage.Resources.Requests[corev1.ResourceStorage]
+		if sourcePVC.Spec.VolumeMode != nil && *sourcePVC.Spec.VolumeMode == corev1.PersistentVolumeBlock {
+			// Aligning this with MTC behavior for feature parity
+			// But ultimately this will be investigated for libvirt issues
+			// https://github.com/migtools/mig-controller/blob/a3ff4c526d36af61e20bcf542ea95d97cb9bedcf/pkg/controller/directvolumemigration/pvcs.go#L110
+			size = sourcePVC.Status.Capacity[corev1.ResourceStorage]
+		}
+		return size, nil
 	}
 	// Cannot figure out the size from the DataVolume, get the size from the PVC.
 	return sourcePVC.Spec.Resources.Requests[corev1.ResourceStorage], nil
 }
 
-func (t *Task) createTargetDV(ctx context.Context, pvc migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC, size resource.Quantity, labels, annotations map[string]string) error {
+func (t *Task) createTargetDV(ctx context.Context, pvc migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC, size resource.Quantity, labels map[string]string) error {
 	targetPvc := pvc.DestinationPVC
 
-	// Remove any cdi related annotations from the PVC
-	for k := range annotations {
-		if strings.HasPrefix(k, "cdi.kubevirt.io") || strings.HasPrefix(k, "volume.kubernetes.io/selected-node") {
-			delete(annotations, k)
-		}
-	}
 	dv := &cdiv1.DataVolume{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        *targetPvc.Name,
-			Namespace:   t.Owner.Namespace,
-			Labels:      labels,
-			Annotations: annotations,
+			Name:      *targetPvc.Name,
+			Namespace: t.Owner.Namespace,
+			Labels:    labels,
 		},
 		Spec: cdiv1.DataVolumeSpec{
 			Source: &cdiv1.DataVolumeSource{
