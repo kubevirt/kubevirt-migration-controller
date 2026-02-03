@@ -313,3 +313,122 @@ var _ = Describe("StorageMigration DV Size Determination", func() {
 		),
 	)
 })
+
+var _ = Describe("StorageMigration target DV annotations", func() {
+	var (
+		t *Task
+	)
+	ctx := context.Background()
+
+	BeforeEach(func() {
+		t = &Task{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Log:    logf.Log.WithName("test"),
+			Owner: &migrations.VirtualMachineStorageMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-migration",
+					Namespace: testNamespace,
+					UID:       types.UID("test-uid"),
+				},
+			},
+			Plan: &migrations.VirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-plan",
+					Namespace: testNamespace,
+				},
+			},
+		}
+	})
+
+	AfterEach(func() {
+		CleanupResources(ctx, k8sClient)
+	})
+
+	It("should remove annotations indicating the PVC is bound or provisioned", func() {
+		dvSpec := &cdiv1.DataVolumeSpec{
+			Source: &cdiv1.DataVolumeSource{Snapshot: &cdiv1.DataVolumeSourceSnapshot{}},
+			Storage: &cdiv1.StorageSpec{
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("5Gi"),
+					},
+				},
+			},
+		}
+		vm := createVirtualMachineWithDVTemplate(testVM, dvSpec)
+		Expect(k8sClient.Create(ctx, vm)).To(Succeed())
+		sourceDV := &cdiv1.DataVolume{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      testSourceDV,
+				Namespace: testNamespace,
+			},
+			Spec: *dvSpec,
+		}
+		Expect(k8sClient.Create(ctx, sourceDV)).To(Succeed())
+
+		sourcePVC := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      testSourceDV,
+				Namespace: testNamespace,
+				Annotations: map[string]string{
+					"pv.kubernetes.io/bind-completed":               "true",
+					"volume.beta.kubernetes.io/storage-provisioner": "provisioner-name",
+					"pv.kubernetes.io/bound-by-controller":          "true",
+					"volume.kubernetes.io/storage-provisioner":      "provisioner-name",
+					"cdi.kubevirt.io/pruned-annotation":             "true",
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion: "cdi.kubevirt.io/v1beta1",
+						Kind:       "DataVolume",
+						Name:       testSourceDV,
+						UID:        sourceDV.UID,
+					},
+				},
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				VolumeMode:  ptr.To(corev1.PersistentVolumeFilesystem),
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("1Gi"),
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, sourcePVC)).To(Succeed())
+
+		planVM := migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+			VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+				Name: testVM,
+				TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+					{
+						VolumeName: testVolume,
+						DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+							Name:             ptr.To(testTargetDV),
+							StorageClassName: ptr.To(testStorageClass),
+						},
+					},
+				},
+			},
+			SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+				{
+					VolumeName: testVolume,
+					Name:       testSourceDV,
+					Namespace:  testNamespace,
+					SourcePVC:  *sourcePVC,
+				},
+			},
+		}
+		Expect(t.liveMigrateVM(ctx, planVM)).To(Succeed())
+
+		targetDV := &cdiv1.DataVolume{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testTargetDV}, targetDV)).To(Succeed())
+		Expect(targetDV.Annotations).ToNot(HaveKey("pv.kubernetes.io/bind-completed"))
+		Expect(targetDV.Annotations).ToNot(HaveKey("volume.beta.kubernetes.io/storage-provisioner"))
+		Expect(targetDV.Annotations).ToNot(HaveKey("pv.kubernetes.io/bound-by-controller"))
+		Expect(targetDV.Annotations).ToNot(HaveKey("volume.kubernetes.io/storage-provisioner"))
+		Expect(targetDV.Annotations).ToNot(HaveKey("cdi.kubevirt.io/pruned-annotation"))
+	})
+})
