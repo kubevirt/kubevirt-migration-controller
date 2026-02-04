@@ -42,16 +42,29 @@ spec:
           metadata:
             type: object
           spec:
-            description: VirtualMachineStorageMigrationPlanSpec defines the desired
-              state of VirtualMachineStorageMigrationPlan
+            description: MultiNamespaceVirtualMachineStorageMigrationPlanSpec defines
+              the desired state of MultiNamespaceVirtualMachineStorageMigrationPlan
             properties:
               namespaces:
-                description: The virtual machines to migrate.
+                description: The virtual machines to migrate per namespace.
                 items:
                   properties:
                     name:
                       description: The name of the namespace to migrate.
                       type: string
+                    retentionPolicy:
+                      default: keepSource
+                      description: |-
+                        RetentionPolicy indicates whether to keep or delete the source DataVolume/PVC after each VM migration completes.
+                        When "keepSource" (default), the source is preserved. When "deleteSource", the source DataVolume is deleted
+                        if it exists, otherwise the source PVC is deleted.
+                      enum:
+                      - keepSource
+                      - deleteSource
+                      type: string
+                      x-kubernetes-validations:
+                      - message: retentionPolicy is immutable
+                        rule: self == oldSelf
                     virtualMachines:
                       description: The virtual machines to migrate.
                       items:
@@ -134,6 +147,23 @@ spec:
                   - virtualMachines
                   type: object
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              retentionPolicy:
+                default: keepSource
+                description: |-
+                  RetentionPolicy indicates whether to keep or delete the source DataVolume/PVC after each VM migration completes
+                  in each created namespace plan. When set to "deleteSource", every created VirtualMachineStorageMigrationPlan
+                  will have retentionPolicy set to deleteSource. When "keepSource" or unset, child plans keep their per-namespace
+                  spec or default to keepSource.
+                enum:
+                - keepSource
+                - deleteSource
+                type: string
+                x-kubernetes-validations:
+                - message: retentionPolicy is immutable
+                  rule: self == oldSelf
             required:
             - namespaces
             type: object

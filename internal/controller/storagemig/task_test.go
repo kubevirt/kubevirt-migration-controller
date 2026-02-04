@@ -23,12 +23,17 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	virtv1 "kubevirt.io/api/core/v1"
+	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
 	"kubevirt.io/kubevirt-migration-controller/internal/controller/storagemigplan"
 	testutils "kubevirt.io/kubevirt-migration-controller/internal/controller/testutils"
@@ -50,6 +55,7 @@ var _ = Describe("StorageMigration tasks", func() {
 			Client: k8sClient,
 			Scheme: k8sClient.Scheme(),
 			Config: cfg,
+			Log:    logf.Log.WithName("storagemig-controller"),
 		}
 	})
 
@@ -60,8 +66,11 @@ var _ = Describe("StorageMigration tasks", func() {
 		}
 	})
 
-	createValidPlanAndMigration := func(phase migrations.Phase) *migrations.VirtualMachineStorageMigration {
+	createValidPlanAndMigration := func(phase migrations.Phase, retentionPolicy *migrations.RetentionPolicy) *migrations.VirtualMachineStorageMigration {
 		migplan := testutils.NewVirtualMachineStorageMigrationPlan(testutils.TestMigPlanName, testutils.NewVirtualMachine(testutils.TestVMName, testutils.TestNamespace, testutils.TestVolumeName, testutils.TestSourcePVCName))
+		if retentionPolicy != nil {
+			migplan.Spec.RetentionPolicy = retentionPolicy
+		}
 		Expect(k8sClient.Create(ctx, migplan)).To(Succeed())
 		migplan.Status.SetCondition(migrations.Condition{
 			Type:     migrations.Ready,
@@ -79,7 +88,7 @@ var _ = Describe("StorageMigration tasks", func() {
 
 	Context("When the phase is Started", func() {
 		It("should add finalizer to the migration when the phase is Started", func() {
-			createValidPlanAndMigration(migrations.Started)
+			createValidPlanAndMigration(migrations.Started, nil)
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
@@ -93,7 +102,7 @@ var _ = Describe("StorageMigration tasks", func() {
 
 	Context("When the phase is RefreshReadyVirtualMachines", func() {
 		It("should refresh ready virtual machines when the phase is RefreshReadyVirtualMachines", func() {
-			createValidPlanAndMigration(migrations.RefreshStorageMigrationPlan)
+			createValidPlanAndMigration(migrations.RefreshStorageMigrationPlan, nil)
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
@@ -110,7 +119,7 @@ var _ = Describe("StorageMigration tasks", func() {
 
 	Context("When the phase is RefreshCompletedVirtualMachines", func() {
 		It("should start migration when the plan is refreshed", func() {
-			createValidPlanAndMigration(migrations.WaitForStorageMigrationPlanRefreshCompletion)
+			createValidPlanAndMigration(migrations.WaitForStorageMigrationPlanRefreshCompletion, ptr.To(migrations.RetentionPolicyKeepSource))
 			plan := &migrations.VirtualMachineStorageMigrationPlan{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testutils.TestMigPlanName, Namespace: testutils.TestNamespace}, plan)).To(Succeed())
 			plan.Annotations = map[string]string{}
@@ -127,7 +136,7 @@ var _ = Describe("StorageMigration tasks", func() {
 		})
 
 		DescribeTable("should not start migration when the plan is not refreshed", func(startAnnotation func() string, endAnnotation func() string, expectError bool, nextPhase migrations.Phase) {
-			createValidPlanAndMigration(migrations.WaitForStorageMigrationPlanRefreshCompletion)
+			createValidPlanAndMigration(migrations.WaitForStorageMigrationPlanRefreshCompletion, ptr.To(migrations.RetentionPolicyDeleteSource))
 			plan := &migrations.VirtualMachineStorageMigrationPlan{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testutils.TestMigPlanName, Namespace: testutils.TestNamespace}, plan)).To(Succeed())
 			startAnn := startAnnotation()
@@ -217,7 +226,7 @@ var _ = Describe("StorageMigration tasks", func() {
 
 	Context("when the phase is BeginLiveMigration", func() {
 		BeforeEach(func() {
-			createValidPlanAndMigration(migrations.BeginLiveMigration)
+			createValidPlanAndMigration(migrations.BeginLiveMigration, ptr.To(migrations.RetentionPolicyKeepSource))
 			createPVCs()
 			createVM()
 			createVMI()
@@ -258,7 +267,7 @@ var _ = Describe("StorageMigration tasks", func() {
 
 	Context("when the phase is WaitForLiveMigrationToComplete", func() {
 		BeforeEach(func() {
-			createValidPlanAndMigration(migrations.WaitForLiveMigrationToComplete)
+			createValidPlanAndMigration(migrations.WaitForLiveMigrationToComplete, ptr.To(migrations.RetentionPolicyKeepSource))
 			createPVCs()
 			createVM()
 
@@ -344,7 +353,6 @@ var _ = Describe("StorageMigration tasks", func() {
 
 	Context("when the phase is CleanupMigrationResources", func() {
 		BeforeEach(func() {
-			createValidPlanAndMigration(migrations.CleanupMigrationResources)
 			createPVCs()
 			createVM()
 			createVMI()
@@ -367,6 +375,7 @@ var _ = Describe("StorageMigration tasks", func() {
 		}
 
 		It("should properly cleanup migration resources", func() {
+			createValidPlanAndMigration(migrations.CleanupMigrationResources, nil)
 			completeMigration()
 			By("creating a completed virt-launcher pod")
 			pod := &corev1.Pod{}
@@ -416,6 +425,395 @@ var _ = Describe("StorageMigration tasks", func() {
 			), And(
 				HaveField("Name", runningPod.Name),
 			)))
+		})
+
+		It("should delete source PVC when retentionPolicy is deleteSource after migration completes", func() {
+			createValidPlanAndMigration(migrations.CleanupMigrationResources, ptr.To(migrations.RetentionPolicyDeleteSource))
+			plan := &migrations.VirtualMachineStorageMigrationPlan{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testutils.TestMigPlanName, Namespace: testutils.TestNamespace}, plan)).To(Succeed())
+
+			By("setting plan status with CompletedMigrations and SourcePVCs so source can be found for deletion")
+			plan = &migrations.VirtualMachineStorageMigrationPlan{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testutils.TestMigPlanName, Namespace: testutils.TestNamespace}, plan)).To(Succeed())
+			plan.Status.CompletedMigrations = []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+				{
+					VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+						Name:                testutils.TestVMName,
+						TargetMigrationPVCs: plan.Spec.VirtualMachines[0].TargetMigrationPVCs,
+					},
+					SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+						{
+							VolumeName: testutils.TestVolumeName,
+							Name:       testutils.TestSourcePVCName,
+							Namespace:  testutils.TestNamespace,
+							SourcePVC:  *testutils.NewPersistentVolumeClaim(testutils.TestSourcePVCName, testutils.TestNamespace),
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Status().Update(ctx, plan)).To(Succeed())
+
+			completeMigration()
+			By("creating a completed virt-launcher pod so cleanup proceeds")
+			pod := &corev1.Pod{}
+			pod.Name = testutils.TestVMName + "-virt-launcher-completed"
+			pod.Namespace = testutils.TestNamespace
+			pod.Labels = map[string]string{
+				virtLauncherPodLabelSelectorKey: virtLauncherPodLabelSelectorValue,
+			}
+			pod.Spec.Containers = createPodContainer()
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			pod.Status.Phase = corev1.PodSucceeded
+			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			migration := &migrations.VirtualMachineStorageMigration{}
+			Expect(controllerReconciler.Client.Get(ctx, typeNamespacedName, migration)).To(Succeed())
+			Expect(migration.Status.Phase).To(Equal(migrations.Completed))
+
+			By("verifying source PVC was deleted due to retentionPolicy deleteSource")
+			sourcePVC := &corev1.PersistentVolumeClaim{}
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: testutils.TestSourcePVCName, Namespace: testutils.TestNamespace}, sourcePVC)
+
+			if err != nil {
+				Expect(k8serrors.IsNotFound(err)).To(BeTrue())
+			} else {
+				Expect(sourcePVC.DeletionTimestamp).ToNot(BeNil())
+			}
+
+			By("verifying target PVC still exists")
+			targetPVC := &corev1.PersistentVolumeClaim{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testutils.TestTargetPVCName, Namespace: testutils.TestNamespace}, targetPVC)).To(Succeed())
+		})
+	})
+
+	Context("getSourcePVCsForCompletedMigrations", func() {
+		It("returns only source PVCs from CompletedMigrations for VMs in the completed list", func() {
+			sourcePVCCompleted := migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+				VolumeName: "vol-completed",
+				Name:       "pvc-completed",
+				Namespace:  testutils.TestNamespace,
+				SourcePVC:  *testutils.NewPersistentVolumeClaim("pvc-completed", testutils.TestNamespace),
+			}
+			plan := &migrations.VirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: "plan", Namespace: testutils.TestNamespace},
+				Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+					ReadyMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-ready"},
+							SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+								{Name: "pvc-ready", Namespace: testutils.TestNamespace},
+							},
+						},
+					},
+					InProgressMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-inprogress"},
+							SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+								{Name: "pvc-inprogress", Namespace: testutils.TestNamespace},
+							},
+						},
+					},
+					CompletedMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-completed"},
+							SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{sourcePVCCompleted},
+						},
+					},
+				},
+			}
+			task := &Task{
+				Plan: plan,
+				Log:  logf.Log.WithName("test"),
+			}
+			pvcs := task.getSourcePVCsForCompletedMigrations([]string{"vm-completed"})
+			Expect(pvcs).To(HaveLen(1))
+			Expect(pvcs[0].Name).To(Equal("pvc-completed"))
+			Expect(pvcs[0].Namespace).To(Equal(testutils.TestNamespace))
+		})
+
+		It("returns empty when completedVMNames is empty", func() {
+			plan := &migrations.VirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: "plan", Namespace: testutils.TestNamespace},
+				Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+					CompletedMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-completed"},
+							SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+								{Name: "pvc-completed", Namespace: testutils.TestNamespace},
+							},
+						},
+					},
+				},
+			}
+			task := &Task{Plan: plan, Log: logf.Log.WithName("test")}
+			pvcs := task.getSourcePVCsForCompletedMigrations(nil)
+			Expect(pvcs).To(BeEmpty())
+			pvcs = task.getSourcePVCsForCompletedMigrations([]string{})
+			Expect(pvcs).To(BeEmpty())
+		})
+
+		It("returns empty when only ReadyMigrations and InProgressMigrations have VMs (no completed match)", func() {
+			plan := &migrations.VirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: "plan", Namespace: testutils.TestNamespace},
+				Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+					ReadyMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-ready"},
+							SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+								{Name: "pvc-ready", Namespace: testutils.TestNamespace},
+							},
+						},
+					},
+					InProgressMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-inprogress"},
+							SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+								{Name: "pvc-inprogress", Namespace: testutils.TestNamespace},
+							},
+						},
+					},
+					CompletedMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{},
+				},
+			}
+			task := &Task{Plan: plan, Log: logf.Log.WithName("test")}
+			// Passing ready/inprogress VM names does not return their PVCs because only CompletedMigrations is consulted.
+			pvcs := task.getSourcePVCsForCompletedMigrations([]string{"vm-ready", "vm-inprogress"})
+			Expect(pvcs).To(BeEmpty())
+		})
+
+		It("returns only matching completed VMs and ignores non-matching completed entries", func() {
+			plan := &migrations.VirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: "plan", Namespace: testutils.TestNamespace},
+				Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+					CompletedMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-a"},
+							SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+								{Name: "pvc-a", Namespace: testutils.TestNamespace},
+							},
+						},
+						{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-b"},
+							SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+								{Name: "pvc-b", Namespace: testutils.TestNamespace},
+							},
+						},
+					},
+				},
+			}
+			task := &Task{Plan: plan, Log: logf.Log.WithName("test")}
+			pvcs := task.getSourcePVCsForCompletedMigrations([]string{"vm-a"})
+			Expect(pvcs).To(HaveLen(1))
+			Expect(pvcs[0].Name).To(Equal("pvc-a"))
+		})
+	})
+
+	Context("deleteSourceDataVolumesAndPVCs", func() {
+		const (
+			vmReadyName       = "vm-ready"
+			vmInProgressName  = "vm-inprogress"
+			vmCompletedName   = "vm-completed"
+			pvcReadyName      = "pvc-ready"
+			pvcInProgressName = "pvc-inprogress"
+			pvcCompletedName  = "pvc-completed"
+		)
+
+		It("deletes only source PVCs for completed migrations; leaves ready and in-progress source PVCs untouched", func() {
+			By("creating PVCs for ready, in-progress, and completed migrations")
+			pvcReady := testutils.NewPersistentVolumeClaim(pvcReadyName, testutils.TestNamespace)
+			Expect(k8sClient.Create(ctx, pvcReady)).To(Succeed())
+			pvcInProgress := testutils.NewPersistentVolumeClaim(pvcInProgressName, testutils.TestNamespace)
+			Expect(k8sClient.Create(ctx, pvcInProgress)).To(Succeed())
+			pvcCompleted := testutils.NewPersistentVolumeClaim(pvcCompletedName, testutils.TestNamespace)
+			Expect(k8sClient.Create(ctx, pvcCompleted)).To(Succeed())
+
+			By("creating a plan with ReadyMigrations, InProgressMigrations, and CompletedMigrations each with different source PVCs")
+			plan := &migrations.VirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: "plan-delete-test", Namespace: testutils.TestNamespace},
+				Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+					ReadyMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: vmReadyName},
+							SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+								{Name: pvcReadyName, Namespace: testutils.TestNamespace, SourcePVC: *pvcReady},
+							},
+						},
+					},
+					InProgressMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: vmInProgressName},
+							SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+								{Name: pvcInProgressName, Namespace: testutils.TestNamespace, SourcePVC: *pvcInProgress},
+							},
+						},
+					},
+					CompletedMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: vmCompletedName},
+							SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+								{Name: pvcCompletedName, Namespace: testutils.TestNamespace, SourcePVC: *pvcCompleted},
+							},
+						},
+					},
+				},
+			}
+
+			task := &Task{
+				Plan:   plan,
+				Client: controllerReconciler.Client,
+				Log:    logf.Log.WithName("test"),
+			}
+
+			By("calling deleteSourceDataVolumesAndPVCs with only the completed VM name")
+			Expect(task.deleteSourceDataVolumesAndPVCs(ctx, []string{vmCompletedName})).To(Succeed())
+
+			By("verifying only the completed migration's source PVC was deleted")
+
+			errCompleted := k8sClient.Get(ctx, types.NamespacedName{Name: pvcCompletedName, Namespace: testutils.TestNamespace}, pvcCompleted)
+			if errCompleted != nil {
+				Expect(k8serrors.IsNotFound(errCompleted)).To(BeTrue(), "pvc-completed should be deleted")
+			} else {
+				// Make sure the deletion timestamp is set on the PVC
+				Expect(pvcCompleted.DeletionTimestamp).ToNot(BeNil())
+			}
+
+			By("verifying ready and in-progress source PVCs still exist")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvcReadyName, Namespace: testutils.TestNamespace}, &corev1.PersistentVolumeClaim{})).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvcInProgressName, Namespace: testutils.TestNamespace}, &corev1.PersistentVolumeClaim{})).To(Succeed())
+		})
+
+		It("deletes DataVolume for completed migration when source is a DataVolume", func() {
+			By("creating a DataVolume and PVC for the completed migration (CDI uses same name for DV and PVC)")
+			dvCompleted := &cdiv1.DataVolume{
+				ObjectMeta: metav1.ObjectMeta{Name: pvcCompletedName, Namespace: testutils.TestNamespace},
+				Spec: cdiv1.DataVolumeSpec{
+					PVC: &corev1.PersistentVolumeClaimSpec{
+						AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+						Resources: corev1.VolumeResourceRequirements{
+							Requests: corev1.ResourceList{
+								corev1.ResourceStorage: resource.MustParse("1Gi"),
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, dvCompleted)).To(Succeed())
+			pvcCompleted := testutils.NewPersistentVolumeClaim(pvcCompletedName, testutils.TestNamespace)
+			Expect(k8sClient.Create(ctx, pvcCompleted)).To(Succeed())
+
+			plan := &migrations.VirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: "plan-dv-delete-test", Namespace: testutils.TestNamespace},
+				Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+					CompletedMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: vmCompletedName},
+							SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+								{Name: pvcCompletedName, Namespace: testutils.TestNamespace, SourcePVC: *pvcCompleted},
+							},
+						},
+					},
+				},
+			}
+			task := &Task{
+				Plan:   plan,
+				Client: controllerReconciler.Client,
+				Log:    logf.Log.WithName("test"),
+			}
+			Expect(task.deleteSourceDataVolumesAndPVCs(ctx, []string{vmCompletedName})).To(Succeed())
+
+			By("verifying the DataVolume associated with the completed migration was deleted")
+			errDV := k8sClient.Get(ctx, types.NamespacedName{Name: pvcCompletedName, Namespace: testutils.TestNamespace}, &cdiv1.DataVolume{})
+			Expect(k8serrors.IsNotFound(errDV)).To(BeTrue(), "DataVolume for completed migration should be deleted")
+		})
+
+		It("deletes only DataVolumes for completed migrations; does not delete DVs or PVCs for ready or in-progress", func() {
+			By("creating DataVolumes and PVCs for ready, in-progress, and completed migrations")
+			newDV := func(name string) *cdiv1.DataVolume {
+				return &cdiv1.DataVolume{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testutils.TestNamespace},
+					Spec: cdiv1.DataVolumeSpec{
+						PVC: &corev1.PersistentVolumeClaimSpec{
+							AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+							Resources: corev1.VolumeResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceStorage: resource.MustParse("1Gi"),
+								},
+							},
+						},
+					},
+				}
+			}
+			Expect(k8sClient.Create(ctx, newDV(pvcReadyName))).To(Succeed())
+			Expect(k8sClient.Create(ctx, testutils.NewPersistentVolumeClaim(pvcReadyName, testutils.TestNamespace))).To(Succeed())
+			Expect(k8sClient.Create(ctx, newDV(pvcInProgressName))).To(Succeed())
+			Expect(k8sClient.Create(ctx, testutils.NewPersistentVolumeClaim(pvcInProgressName, testutils.TestNamespace))).To(Succeed())
+			Expect(k8sClient.Create(ctx, newDV(pvcCompletedName))).To(Succeed())
+			pvcCompleted := testutils.NewPersistentVolumeClaim(pvcCompletedName, testutils.TestNamespace)
+			Expect(k8sClient.Create(ctx, pvcCompleted)).To(Succeed())
+
+			plan := &migrations.VirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: "plan-dv-all-test", Namespace: testutils.TestNamespace},
+				Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+					ReadyMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: vmReadyName},
+							SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+								{Name: pvcReadyName, Namespace: testutils.TestNamespace},
+							},
+						},
+					},
+					InProgressMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: vmInProgressName},
+							SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+								{Name: pvcInProgressName, Namespace: testutils.TestNamespace},
+							},
+						},
+					},
+					CompletedMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: vmCompletedName},
+							SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+								{Name: pvcCompletedName, Namespace: testutils.TestNamespace, SourcePVC: *pvcCompleted},
+							},
+						},
+					},
+				},
+			}
+			task := &Task{
+				Plan:   plan,
+				Client: controllerReconciler.Client,
+				Log:    logf.Log.WithName("test"),
+			}
+			Expect(task.deleteSourceDataVolumesAndPVCs(ctx, []string{vmCompletedName})).To(Succeed())
+
+			By("verifying completed migration DataVolume was deleted")
+			errCompletedDV := k8sClient.Get(ctx, types.NamespacedName{Name: pvcCompletedName, Namespace: testutils.TestNamespace}, &cdiv1.DataVolume{})
+			Expect(k8serrors.IsNotFound(errCompletedDV)).To(BeTrue(), "DataVolume for completed migration should be deleted")
+
+			By("verifying ready and in-progress DataVolumes still exist")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvcReadyName, Namespace: testutils.TestNamespace}, &cdiv1.DataVolume{})).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvcInProgressName, Namespace: testutils.TestNamespace}, &cdiv1.DataVolume{})).To(Succeed())
+
+			By("verifying ready and in-progress source PVCs still exist")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvcReadyName, Namespace: testutils.TestNamespace}, &corev1.PersistentVolumeClaim{})).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvcInProgressName, Namespace: testutils.TestNamespace}, &corev1.PersistentVolumeClaim{})).To(Succeed())
+		})
+
+		It("does nothing when Plan is nil", func() {
+			pvc := testutils.NewPersistentVolumeClaim("pvc-orphan", testutils.TestNamespace)
+			Expect(k8sClient.Create(ctx, pvc)).To(Succeed())
+			task := &Task{
+				Plan:   nil,
+				Client: controllerReconciler.Client,
+				Log:    logf.Log.WithName("test"),
+			}
+			Expect(task.deleteSourceDataVolumesAndPVCs(ctx, []string{"any-vm"})).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "pvc-orphan", Namespace: testutils.TestNamespace}, &corev1.PersistentVolumeClaim{})).To(Succeed())
 		})
 	})
 })
