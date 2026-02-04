@@ -24,6 +24,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	virtv1 "kubevirt.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -55,6 +56,7 @@ func DeleteMigPlanNamespace(ctx context.Context, client client.Client, namespace
 
 func CleanupResources(ctx context.Context, client client.Client) {
 	cleanupKubeVirt(ctx, client)
+	cleanupMultiNamespaceVirtualMachineStorageMigrationPlan(ctx, client)
 	cleanupVirtualMachineStorageMigrationPlan(ctx, client)
 	cleanupVirtualMachineStorageMigration(ctx, client)
 	cleanupPVCs(ctx, client)
@@ -85,6 +87,14 @@ func cleanupKubeVirt(ctx context.Context, client client.Client) {
 	}
 }
 
+func cleanupMultiNamespaceVirtualMachineStorageMigrationPlan(ctx context.Context, client client.Client) {
+	multiList := &migrations.MultiNamespaceVirtualMachineStorageMigrationPlanList{}
+	Expect(client.List(ctx, multiList)).To(Succeed())
+	for i := range multiList.Items {
+		Expect(client.Delete(ctx, &multiList.Items[i])).To(Succeed())
+	}
+}
+
 func cleanupVirtualMachineStorageMigrationPlan(ctx context.Context, client client.Client) {
 	vmStorageMigrationPlanList := &migrations.VirtualMachineStorageMigrationPlanList{}
 	Expect(client.List(ctx, vmStorageMigrationPlanList)).To(Succeed())
@@ -109,7 +119,12 @@ func cleanupPVCs(ctx context.Context, client client.Client) {
 	for _, pvc := range PVCList.Items {
 		pvc.Finalizers = []string{}
 		Expect(client.Update(ctx, &pvc)).To(Succeed())
-		Expect(client.Delete(ctx, &pvc)).To(Succeed())
+		err := client.Delete(ctx, &pvc)
+		if err != nil {
+			if !k8serrors.IsNotFound(err) {
+				Expect(err).To(Succeed())
+			}
+		}
 	}
 }
 
