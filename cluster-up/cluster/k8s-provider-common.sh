@@ -19,7 +19,7 @@ function deploy_kwok() {
 function copy_istio_cni_conf_files() {
     if [ "$KUBEVIRT_DEPLOY_ISTIO" == "true" ] && [ "$KUBEVIRT_WITH_CNAO" == "true" ]; then
         for nodeNum in $(seq -f "%02g" 1 $KUBEVIRT_NUM_NODES); do
-            $ssh node${nodeNum} -- "until ls /etc/cni/multus > /dev/null 2>&1; do sleep 1; done"
+            $ssh node${nodeNum} -- "until ls /etc/cni/multus/net.d/*istio*.conf > /dev/null 2>&1; do sleep 1; done"
             $ssh node${nodeNum} -- sudo cp -uv /etc/cni/multus/net.d/*istio*.conf /etc/cni/net.d/
         done
     fi
@@ -114,13 +114,11 @@ function cli_scp_command() {
 }
 
 function change_permissions() {
-    if [[ ${_cri_bin} = podman* ]]; then
-        args="-v ${KUBEVIRTCI_CONFIG_PATH}/$KUBEVIRT_PROVIDER:/kubevirtci_config"
-        ${_cri_bin} run --privileged --rm $args \
-            --entrypoint /bin/sh ${_cli_container} \
-            -c "chmod 755 /kubevirtci_config/.kubectl"
-        ${_cri_bin} run --privileged --rm $args \
-            --entrypoint /bin/sh ${_cli_container} \
-            -c "chmod 766 /kubevirtci_config/.kubeconfig"
-    fi
+    args="-v ${KUBEVIRTCI_CONFIG_PATH}/$KUBEVIRT_PROVIDER:/kubevirtci_config"
+    ${_cri_bin} run --privileged --rm $args \
+        --entrypoint /bin/sh ${_cli_container} \
+        -c "chmod 755 /kubevirtci_config/.kubectl"
+    ${_cri_bin} run --privileged --rm $args \
+        --entrypoint /bin/sh ${_cli_container} \
+        -c "chmod 766 /kubevirtci_config/.kubeconfig"
 }

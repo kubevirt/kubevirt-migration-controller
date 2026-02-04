@@ -45,7 +45,7 @@ else
 fi
 
 _cli_container="${KUBEVIRTCI_GOCLI_CONTAINER:-quay.io/kubevirtci/gocli:${KUBEVIRTCI_TAG}}"
-_cli="${_cri_bin} run --privileged --net=host --rm ${USE_TTY} -v ${_cri_socket}:/var/run/docker.sock"
+_cli="${_cri_bin} run --privileged --net=host --rm ${USE_TTY} -v ${_cri_socket}:/var/run/docker.sock -e KUBEVIRT_PROVIDER=${KUBEVIRT_PROVIDER} -e DOCKER_API_VERSION"
 # gocli will try to mount /lib/modules to make it accessible to dnsmasq in
 # in case it exists
 if [ -d /lib/modules ]; then
@@ -139,6 +139,10 @@ function _add_common_params() {
         params=" --single-stack $params"
     fi
 
+    if [ $KUBEVIRT_FLANNEL == "true" ]; then
+        params=" --flannel $params"
+    fi
+
     if [ $KUBEVIRT_NO_ETCD_FSYNC == "true" ]; then
         params=" --no-etcd-fsync $params"
     fi
@@ -194,12 +198,16 @@ function _add_common_params() {
         params=" --enable-fips $params"
     fi
 
-    if [ "$KUBEVIRT_WITH_MULTUS_V3" == "true" ]; then
+    if [ "$KUBEVIRT_WITH_MULTUS_V3" == "true" ] || [ "$KUBEVIRT_WITH_MULTUS" == "true" ]; then
         params=" --deploy-multus $params"
     fi
 
     if [ "$KUBEVIRT_WITH_CNAO" == "true" ]; then
         params=" --enable-cnao $params"
+    fi
+
+    if [ "$KUBEVIRT_WITH_DYN_NET_CTRL" == "true" ]; then
+        params=" --deploy-dnc $params"
     fi
 
     if [ "$KUBEVIRT_DEPLOY_CDI" == "true" ]; then
@@ -249,6 +257,10 @@ function _add_common_params() {
 
     if [ -n "$KUBEVIRTCI_PROXY" ]; then
         params=" --docker-proxy=$KUBEVIRTCI_PROXY $params"
+    fi
+
+    if [ "$KUBEVIRT_DEPLOY_NETWORK_RESOURCES_INJECTOR" == "true" ]; then
+        params=" --deploy-network-resources-injector $params"
     fi
 
     echo $params
