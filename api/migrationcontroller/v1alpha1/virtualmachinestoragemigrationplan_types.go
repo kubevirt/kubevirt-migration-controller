@@ -25,10 +25,35 @@ const (
 	VirtualMachineStorageMigrationPlanKind = "VirtualMachineStorageMigrationPlan"
 )
 
-// VirtualMachineStorageMigrationPlanSpec defines the desired state of VirtualMachineStorageMigrationPlan
-type VirtualMachineStorageMigrationPlanSpec struct {
+// RetentionPolicy defines what to do with the source DataVolume/PVC after a migration completes.
+// +kubebuilder:validation:Enum=keepSource;deleteSource
+type RetentionPolicy string
+
+const (
+	// RetentionPolicyKeepSource keeps the source DataVolume/PVC after migration (default behavior).
+	RetentionPolicyKeepSource RetentionPolicy = "keepSource"
+	// RetentionPolicyDeleteSource deletes the source DataVolume (if it exists) or source PVC after migration completes.
+	RetentionPolicyDeleteSource RetentionPolicy = "deleteSource"
+)
+
+// VirtualMachineStorageMigrationPlanSpecInline is the spec structure without CEL oldSelf validation.
+// It is used when this spec is embedded in list types (e.g. MultiNamespace plan's namespaces list),
+// where oldSelf is not allowed by the API server (list items are "uncorrelatable").
+type VirtualMachineStorageMigrationPlanSpecInline struct {
 	// The virtual machines to migrate.
 	VirtualMachines []VirtualMachineStorageMigrationPlanVirtualMachine `json:"virtualMachines"`
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=keepSource
+	// RetentionPolicy indicates whether to keep or delete the source DataVolume/PVC after each VM migration completes.
+	// When "keepSource" (default), the source is preserved. When "deleteSource", the source DataVolume is deleted
+	// if it exists, otherwise the source PVC is deleted.
+	RetentionPolicy *RetentionPolicy `json:"retentionPolicy,omitempty"`
+}
+
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.retentionPolicy) || self.retentionPolicy == oldSelf.retentionPolicy",message="retentionPolicy is immutable"
+// VirtualMachineStorageMigrationPlanSpec defines the desired state of VirtualMachineStorageMigrationPlan
+type VirtualMachineStorageMigrationPlanSpec struct {
+	VirtualMachineStorageMigrationPlanSpecInline `json:",inline"`
 }
 
 // VirtualMachineStorageMigrationPlanVirtualMachine defines the VirtualMachine to migrate and the PVCs to migrate.

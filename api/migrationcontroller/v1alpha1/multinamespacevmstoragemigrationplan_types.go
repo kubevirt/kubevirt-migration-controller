@@ -24,17 +24,28 @@ const (
 	MultiNamespaceVirtualMachineStorageMigrationPlanKind = "MultiNamespaceVirtualMachineStorageMigrationPlan"
 )
 
-// VirtualMachineStorageMigrationPlanSpec defines the desired state of VirtualMachineStorageMigrationPlan
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.retentionPolicy) || self.retentionPolicy == oldSelf.retentionPolicy",message="retentionPolicy is immutable"
+// MultiNamespaceVirtualMachineStorageMigrationPlanSpec defines the desired state of MultiNamespaceVirtualMachineStorageMigrationPlan
 type MultiNamespaceVirtualMachineStorageMigrationPlanSpec struct {
-	// The virtual machines to migrate.
+	// +kubebuilder:validation:XListType=map
+	// +kubebuilder:validation:XListMapKeys=name
+	// The virtual machines to migrate per namespace.
 	Namespaces []VirtualMachineStorageMigrationPlanNamespaceSpec `json:"namespaces"`
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=keepSource
+	// RetentionPolicy indicates whether to keep or delete the source DataVolume/PVC after each VM migration completes
+	// in each created namespace plan. When set to "deleteSource", every created VirtualMachineStorageMigrationPlan
+	// will have retentionPolicy set to deleteSource. When "keepSource" or unset, child plans keep their per-namespace
+	// spec or default to keepSource.
+	RetentionPolicy *RetentionPolicy `json:"retentionPolicy,omitempty"`
 }
 
 type VirtualMachineStorageMigrationPlanNamespaceSpec struct {
 	// The name of the namespace to migrate.
 	Name string `json:"name"`
 	// The virtual machines storage migration plan spec for the namespace.
-	*VirtualMachineStorageMigrationPlanSpec `json:",inline"`
+	// Uses SpecInline (not Spec) so CEL validation with oldSelf is not applied to list items (not allowed by API server).
+	*VirtualMachineStorageMigrationPlanSpecInline `json:",inline"`
 }
 
 // MultiNamespaceVirtualMachineStorageMigrationPlanStatus defines the observed state of MultiNamespaceVirtualMachineStorageMigrationPlan

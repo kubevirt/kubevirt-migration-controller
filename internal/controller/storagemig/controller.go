@@ -59,7 +59,7 @@ type StorageMigrationReconciler struct {
 // +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=virtualmachinestoragemigrations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=virtualmachinestoragemigrations/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=virtualmachinestoragemigrations/finalizers,verbs=update
-// +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=list;watch;update
+// +kubebuilder:rbac:groups=core,resources=persistentvolumeclaims,verbs=list;watch;update;delete
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=list;watch
 // +kubebuilder:rbac:groups=kubevirt.io,resources=virtualmachines,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cdiv1.kubevirt.io,resources=datavolumes,verbs=get;list;watch;create;update;patch;delete
