@@ -75,17 +75,19 @@ var _ = Describe("MigPlan", func() {
 				Namespace: namespace,
 			},
 			Spec: migrations.VirtualMachineStorageMigrationPlanSpec{
-				VirtualMachines: []migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
-					{
-						Name: "test-vm",
-						TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
-							{
-								VolumeName: "test-volume",
-								DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
-									Name:             ptr.To[string]("test-pvc"),
-									StorageClassName: ptr.To[string]("test-storage-class"),
-									AccessModes:      []migrations.VirtualMachineStorageMigrationPlanAccessMode{"ReadWriteOnce"},
-									VolumeMode:       ptr.To[corev1.PersistentVolumeMode]("Filesystem"),
+				VirtualMachineStorageMigrationPlanSpecInline: migrations.VirtualMachineStorageMigrationPlanSpecInline{
+					VirtualMachines: []migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+						{
+							Name: "test-vm",
+							TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+								{
+									VolumeName: "test-volume",
+									DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+										Name:             ptr.To[string]("test-pvc"),
+										StorageClassName: ptr.To[string]("test-storage-class"),
+										AccessModes:      []migrations.VirtualMachineStorageMigrationPlanAccessMode{"ReadWriteOnce"},
+										VolumeMode:       ptr.To[corev1.PersistentVolumeMode]("Filesystem"),
+									},
 								},
 							},
 						},
