@@ -22,6 +22,7 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
@@ -29,6 +30,7 @@ import (
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/common/model"
 	virtv1 "kubevirt.io/api/core/v1"
+	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
 )
 
@@ -113,6 +115,12 @@ func (t *Task) Run(ctx context.Context) error {
 		} else if !allCleaned {
 			t.Requeue = PollReQ
 		} else {
+			if t.Plan != nil && t.Plan.Spec.RetentionPolicy != nil && *t.Plan.Spec.RetentionPolicy == migrations.RetentionPolicyDeleteSource {
+				log.V(5).Info("Deleting source DataVolume and PVCs due to retentionPolicy deleteSource")
+				if err := t.deleteSourceDataVolumesAndPVCs(ctx, t.Owner.Status.CompletedMigrations); err != nil {
+					return err
+				}
+			}
 			t.Owner.RemoveFinalizer(migrations.VirtualMachineStorageMigrationFinalizer, t.Log)
 			t.Owner.Status.Phase = migrations.Completed
 		}
@@ -288,6 +296,78 @@ func (t *Task) cleanupCompletedVMIMs(ctx context.Context) error {
 			}
 		} else if vmim.Status.Phase == virtv1.MigrationFailed {
 			t.Log.V(2).Info("WARNING: Not cleaning up failed VMIM", "vmim", vmim.Name)
+		}
+	}
+	return nil
+}
+
+// getSourcePVCsForCompletedMigrations returns the source PVCs for the given completed VM names from the plan status.
+// It only checks CompletedMigrations because we don't want to delete the source PVC for in-progress or ready migrations.
+func (t *Task) getSourcePVCsForCompletedMigrations(completedVMNames []string) []migrations.VirtualMachineStorageMigrationPlanSourcePVC {
+	completedSet := make(map[string]struct{})
+	for _, name := range completedVMNames {
+		completedSet[name] = struct{}{}
+	}
+	var sourcePVCs []migrations.VirtualMachineStorageMigrationPlanSourcePVC
+	appendSourcePVCs := func(vms []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine) {
+		for _, vm := range vms {
+			if _, ok := completedSet[vm.Name]; ok {
+				sourcePVCs = append(sourcePVCs, vm.SourcePVCs...)
+			}
+		}
+	}
+	appendSourcePVCs(t.Plan.Status.CompletedMigrations)
+	return sourcePVCs
+}
+
+// deleteSourceDataVolumesAndPVCs deletes the source DataVolume (if it exists) or source PVC for each completed migration.
+func (t *Task) deleteSourceDataVolumesAndPVCs(ctx context.Context, completedMigrationsVMNames []string) error {
+	if t.Plan == nil {
+		return nil
+	}
+	sourcePVCs := t.getSourcePVCsForCompletedMigrations(completedMigrationsVMNames)
+	// Deduplicate by namespace/name
+	seen := make(map[string]struct{})
+	for _, sourcePVC := range sourcePVCs {
+		key := sourcePVC.Namespace + "/" + sourcePVC.Name
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		// Try to delete DataVolume first (CDI creates PVC with same name as DataVolume).
+		dv := &cdiv1.DataVolume{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      sourcePVC.Name,
+				Namespace: sourcePVC.Namespace,
+			},
+		}
+		t.Log.V(5).Info("deleting DataVolume", "name", dv.Name, "namespace", dv.Namespace)
+		if err := t.Client.Delete(ctx, dv); err != nil {
+			if !k8serrors.IsNotFound(err) {
+				return err
+			}
+			t.Log.V(5).Info("DataVolume not found", "name", dv.Name, "namespace", dv.Namespace)
+			// DataVolume not found, fall through to delete PVC
+		} else {
+			t.Log.V(5).Info("Deleted source DataVolume", "name", sourcePVC.Name, "namespace", sourcePVC.Namespace)
+			continue
+		}
+
+		t.Log.V(5).Info("deleting PVC", "name", sourcePVC.Name, "namespace", sourcePVC.Namespace)
+		// No DataVolume or it was already deleted; delete the source PVC.
+		pvc := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      sourcePVC.Name,
+				Namespace: sourcePVC.Namespace,
+			},
+		}
+		if err := t.Client.Delete(ctx, pvc); err != nil {
+			if !k8serrors.IsNotFound(err) {
+				return err
+			}
+		} else {
+			t.Log.V(5).Info("Deleted source PVC", "name", sourcePVC.Name, "namespace", sourcePVC.Namespace)
 		}
 	}
 	return nil
