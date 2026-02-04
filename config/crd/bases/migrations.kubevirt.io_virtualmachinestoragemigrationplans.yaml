@@ -54,6 +54,19 @@ spec:
             description: VirtualMachineStorageMigrationPlanSpec defines the desired
               state of VirtualMachineStorageMigrationPlan
             properties:
+              retentionPolicy:
+                default: keepSource
+                description: |-
+                  RetentionPolicy indicates whether to keep or delete the source DataVolume/PVC after each VM migration completes.
+                  When "keepSource" (default), the source is preserved. When "deleteSource", the source DataVolume is deleted
+                  if it exists, otherwise the source PVC is deleted.
+                enum:
+                - keepSource
+                - deleteSource
+                type: string
+                x-kubernetes-validations:
+                - message: retentionPolicy is immutable
+                  rule: self == oldSelf
               virtualMachines:
                 description: The virtual machines to migrate.
                 items:
