@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package storagemig
+package multinamespacestoragemig
 
 import (
 	"context"
@@ -47,6 +47,10 @@ import (
 const (
 	multiNamespaceStorageMigrationNameLabel      = "migrations.kubevirt.io/multi-namespace-storage-mig-name"
 	multiNamespaceStorageMigrationNamespaceLabel = "migrations.kubevirt.io/multi-namespace-storage-mig-namespace"
+	multiNamespaceStorageMigrationUIDLabel       = "migration.kubevirt.io/multi-namespace-storage-mig-uid"
+
+	multiNamespaceStorageMigrationNameAnnotation      = "migration.kubevirt.io/multi-namespace-storage-mig-name"
+	multiNamespaceStorageMigrationNamespaceAnnotation = "migration.kubevirt.io/multi-namespace-storage-mig-namespace"
 )
 
 // MigMigrationReconciler reconciles a MigMigration object
@@ -160,8 +164,11 @@ func (r *MultiNamespaceStorageMigrationReconciler) createNamespacedMigration(ctx
 			Name:      migrations.GetNamespacedPlanName(planName, namespacePlan.Name),
 			Namespace: namespacePlan.Name,
 			Labels: map[string]string{
-				multiNamespaceStorageMigrationNameLabel:      migration.Name,
-				multiNamespaceStorageMigrationNamespaceLabel: migration.Namespace,
+				multiNamespaceStorageMigrationUIDLabel: string(migration.UID),
+			},
+			Annotations: map[string]string{
+				multiNamespaceStorageMigrationNameAnnotation:      migration.Name,
+				multiNamespaceStorageMigrationNamespaceAnnotation: migration.Namespace,
 			},
 		},
 		Spec: migrations.VirtualMachineStorageMigrationSpec{
@@ -204,12 +211,16 @@ func (r *MultiNamespaceStorageMigrationReconciler) SetupWithManager(mgr ctrl.Man
 }
 
 func (r *MultiNamespaceStorageMigrationReconciler) getVirtualMachineStorageMigrationsForMultiNamespaceStorageMigration(ctx context.Context, migration *migrations.VirtualMachineStorageMigration) []reconcile.Request {
-	if migration.Labels[multiNamespaceStorageMigrationNameLabel] == "" || migration.Labels[multiNamespaceStorageMigrationNamespaceLabel] == "" {
-		return nil
+	// backwards compatibility with us using labels here
+	nameLabel := migration.Labels[multiNamespaceStorageMigrationNameLabel]
+	namespaceLabel := migration.Labels[multiNamespaceStorageMigrationNamespaceLabel]
+	if nameLabel == "" || namespaceLabel == "" {
+		nameLabel = migration.Annotations[multiNamespaceStorageMigrationNameAnnotation]
+		namespaceLabel = migration.Annotations[multiNamespaceStorageMigrationNamespaceAnnotation]
 	}
 	multiNamespaceMigration := &migrations.MultiNamespaceVirtualMachineStorageMigration{}
-	if err := r.Client.Get(ctx, types.NamespacedName{Name: migration.Labels[multiNamespaceStorageMigrationNameLabel], Namespace: migration.Labels[multiNamespaceStorageMigrationNamespaceLabel]}, multiNamespaceMigration); err != nil {
-		r.Log.Error(err, "failed to get MultiNamespaceVirtualMachineStorageMigration for VirtualMachineStorageMigration", "multi-namespace-storage-mig-name", migration.Labels[multiNamespaceStorageMigrationNameLabel], "multi-namespace-storage-mig-namespace", migration.Labels[multiNamespaceStorageMigrationNamespaceLabel])
+	if err := r.Get(ctx, types.NamespacedName{Name: nameLabel, Namespace: namespaceLabel}, multiNamespaceMigration); err != nil {
+		r.Log.Error(err, "failed to get MultiNamespaceVirtualMachineStorageMigration for VirtualMachineStorageMigration", "multi-namespace-storage-mig-name", nameLabel, "multi-namespace-storage-mig-namespace", namespaceLabel)
 		return nil
 	}
 	return []reconcile.Request{

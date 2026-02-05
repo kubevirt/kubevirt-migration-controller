@@ -22,12 +22,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openshift/library-go/pkg/build/naming"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	kvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 	virtv1 "kubevirt.io/api/core/v1"
 	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
@@ -165,7 +167,8 @@ func (t *Task) createTargetDV(ctx context.Context, pvc migrations.VirtualMachine
 		dv.Labels = make(map[string]string)
 	}
 	dv.Labels[migrations.VirtualMachineStorageMigrationUIDLabel] = string(t.Owner.UID)
-	dv.Labels[migrations.VirtualMachineStorageMigrationPlanLabel] = t.Plan.Name
+	dv.Labels[migrations.VirtualMachineStorageMigrationPlanLabel] = naming.GetName(t.Plan.Name, "mig", kvalidation.DNS1035LabelMaxLength)
+	dv.Labels[migrations.VirtualMachineStorageMigrationPlanUIDLabel] = string(t.Plan.UID)
 	if err := t.Client.Create(ctx, dv); err != nil {
 		if k8serrors.IsAlreadyExists(err) {
 			return nil

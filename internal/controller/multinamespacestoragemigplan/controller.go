@@ -42,6 +42,10 @@ import (
 const (
 	multiNamespaceStorageMigPlanNameLabel      = "migration.kubevirt.io/multi-namespace-storage-mig-plan-name"
 	multiNamespaceStorageMigPlanNamespaceLabel = "migration.kubevirt.io/multi-namespace-storage-mig-plan-namespace"
+	multiNamespaceStorageMigPlanUIDLabel       = "migration.kubevirt.io/multi-namespace-storage-mig-plan-uid"
+
+	multiNamespaceStorageMigPlanNameAnnotation      = "migration.kubevirt.io/multi-namespace-storage-mig-plan-name"
+	multiNamespaceStorageMigPlanNamespaceAnnotation = "migration.kubevirt.io/multi-namespace-storage-mig-plan-namespace"
 
 	InvalidNamespace = "InvalidNamespace"
 )
@@ -91,7 +95,7 @@ func (r *MultiNamespaceStorageMigPlanReconciler) Reconcile(ctx context.Context, 
 		}
 		if namespacedPlan == nil {
 			log.Info("Creating namespace plan", "namespace", namespace.Name)
-			err = r.createNamespacePlan(ctx, plan.Name, &namespace)
+			err = r.createNamespacePlan(ctx, plan, &namespace)
 			if err != nil {
 				return reconcile.Result{}, err
 			}
@@ -182,14 +186,17 @@ func (r *MultiNamespaceStorageMigPlanReconciler) validateNamespace(ctx context.C
 	return "", nil
 }
 
-func (r *MultiNamespaceStorageMigPlanReconciler) createNamespacePlan(ctx context.Context, planName string, namespace *migrations.VirtualMachineStorageMigrationPlanNamespaceSpec) error {
+func (r *MultiNamespaceStorageMigPlanReconciler) createNamespacePlan(ctx context.Context, plan *migrations.MultiNamespaceVirtualMachineStorageMigrationPlan, namespace *migrations.VirtualMachineStorageMigrationPlanNamespaceSpec) error {
 	namespacePlan := &migrations.VirtualMachineStorageMigrationPlan{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      migrations.GetNamespacedPlanName(planName, namespace.Name),
+			Name:      migrations.GetNamespacedPlanName(plan.Name, namespace.Name),
 			Namespace: namespace.Name,
 			Labels: map[string]string{
-				multiNamespaceStorageMigPlanNameLabel:      planName,
-				multiNamespaceStorageMigPlanNamespaceLabel: namespace.Name,
+				multiNamespaceStorageMigPlanUIDLabel: string(plan.UID),
+			},
+			Annotations: map[string]string{
+				multiNamespaceStorageMigPlanNameAnnotation:      plan.Name,
+				multiNamespaceStorageMigPlanNamespaceAnnotation: namespace.Name,
 			},
 		},
 		Spec: *namespace.VirtualMachineStorageMigrationPlanSpec.DeepCopy(),
@@ -230,12 +237,16 @@ func (r *MultiNamespaceStorageMigPlanReconciler) SetupWithManager(mgr ctrl.Manag
 }
 
 func (r *MultiNamespaceStorageMigPlanReconciler) getMultiNamespaceVirtualMachineStorageMigrationsPlanForStorageMigration(ctx context.Context, plan *migrations.VirtualMachineStorageMigrationPlan) []reconcile.Request {
-	if plan.Labels[multiNamespaceStorageMigPlanNameLabel] == "" || plan.Labels[multiNamespaceStorageMigPlanNamespaceLabel] == "" {
-		return nil
+	// backwards compatibility with us using labels here
+	nameLabel := plan.Labels[multiNamespaceStorageMigPlanNameLabel]
+	namespaceLabel := plan.Labels[multiNamespaceStorageMigPlanNamespaceLabel]
+	if nameLabel == "" || namespaceLabel == "" {
+		nameLabel = plan.Annotations[multiNamespaceStorageMigPlanNameAnnotation]
+		namespaceLabel = plan.Annotations[multiNamespaceStorageMigPlanNamespaceAnnotation]
 	}
 	multiNamespaceStorageMigPlan := &migrations.MultiNamespaceVirtualMachineStorageMigrationPlan{}
-	if err := r.Get(ctx, types.NamespacedName{Name: plan.Labels[multiNamespaceStorageMigPlanNameLabel], Namespace: plan.Labels[multiNamespaceStorageMigPlanNamespaceLabel]}, multiNamespaceStorageMigPlan); err != nil {
-		r.Log.Error(err, "failed to get MultiNamespaceVirtualMachineStorageMigrationPlan for VirtualMachineStorageMigrationPlan", "multi-namespace-storage-mig-plan-name", plan.Labels[multiNamespaceStorageMigPlanNameLabel], "multi-namespace-storage-mig-plan-namespace", plan.Labels[multiNamespaceStorageMigPlanNamespaceLabel])
+	if err := r.Get(ctx, types.NamespacedName{Name: nameLabel, Namespace: namespaceLabel}, multiNamespaceStorageMigPlan); err != nil {
+		r.Log.Error(err, "failed to get MultiNamespaceVirtualMachineStorageMigrationPlan for VirtualMachineStorageMigrationPlan", "multi-namespace-storage-mig-plan-name", nameLabel, "multi-namespace-storage-mig-plan-namespace", namespaceLabel)
 		return nil
 	}
 	return []reconcile.Request{
