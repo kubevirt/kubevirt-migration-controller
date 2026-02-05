@@ -23,6 +23,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/openshift/library-go/pkg/build/naming"
+
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -31,6 +33,7 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
+	kvalidation "k8s.io/apimachinery/pkg/util/validation"
 
 	virtv1 "kubevirt.io/api/core/v1"
 	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
@@ -292,7 +295,8 @@ func (r *StorageMigPlanReconciler) targetPVCName(name *string, sourcePVCName str
 	}
 	sourcePVCName = trimSuffix(sourcePVCName)
 	if suffix != nil {
-		return fmt.Sprintf("%s-mig-%s", sourcePVCName, *suffix), nil
+		migSuffix := fmt.Sprintf("mig-%s", *suffix)
+		return naming.GetName(sourcePVCName, migSuffix, kvalidation.DNS1035LabelMaxLength), nil
 	}
 	return "", fmt.Errorf("no name provided and no suffix set")
 }
