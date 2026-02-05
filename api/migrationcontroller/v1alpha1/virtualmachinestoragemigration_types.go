@@ -23,9 +23,10 @@ import (
 )
 
 const (
-	VirtualMachineStorageMigrationUIDLabel  = "virtualmachinestoragemigration.kubevirt.io/virtualmachinestoragemigration-uid"
-	VirtualMachineStorageMigrationPlanLabel = "virtualmachinestoragemigration.kubevirt.io/virtualmachinestoragemigrationplan-name"
-	VirtualMachineStorageMigrationFinalizer = "virtualmachinestoragemigration.kubevirt.io/finalizer"
+	VirtualMachineStorageMigrationUIDLabel     = "virtualmachinestoragemigration.kubevirt.io/virtualmachinestoragemigration-uid"
+	VirtualMachineStorageMigrationPlanLabel    = "virtualmachinestoragemigration.kubevirt.io/virtualmachinestoragemigrationplan-name"
+	VirtualMachineStorageMigrationPlanUIDLabel = "virtualmachinestoragemigration.kubevirt.io/virtualmachinestoragemigrationplan-uid"
+	VirtualMachineStorageMigrationFinalizer    = "virtualmachinestoragemigration.kubevirt.io/finalizer"
 )
 
 // MigMigrationSpec defines the desired state of MigMigration

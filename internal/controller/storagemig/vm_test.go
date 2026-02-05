@@ -17,6 +17,7 @@ package storagemig
 
 import (
 	"context"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -25,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	kvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 	virtv1 "kubevirt.io/api/core/v1"
 	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
@@ -71,7 +73,7 @@ var _ = Describe("StorageMigration VM", func() {
 	})
 
 	DescribeTable("should update the VM for storage migration with a dv template in the vm", func(datavolumeSpec *cdiv1.DataVolumeSpec) {
-		vm := createVirtualMachineWithDVTemplate(testVM, datavolumeSpec)
+		vm := createVirtualMachineWithDVTemplate(datavolumeSpec)
 		Expect(k8sClient.Create(ctx, vm)).To(Succeed())
 		t := &Task{
 			Client: k8sClient,
@@ -146,10 +148,122 @@ var _ = Describe("StorageMigration VM", func() {
 	)
 })
 
-func createVirtualMachineWithDVTemplate(name string, datavolumeSpec *cdiv1.DataVolumeSpec) *virtv1.VirtualMachine {
+var _ = Describe("StorageMigration DV labels", func() {
+	ctx := context.Background()
+
+	AfterEach(func() {
+		CleanupResources(ctx, k8sClient)
+	})
+
+	DescribeTable("should add the correct labels to the DV respecting max length", func(planName string) {
+		t := &Task{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Log:    logf.Log.WithName("test"),
+			Owner: &migrations.VirtualMachineStorageMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-migration",
+					Namespace: testNamespace,
+					UID:       types.UID("test-uid-migration"),
+				},
+			},
+			Plan: &migrations.VirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      planName,
+					Namespace: testNamespace,
+					UID:       types.UID("test-uid-plan"),
+				},
+			},
+		}
+		dvSpec := &cdiv1.DataVolumeSpec{
+			Source: &cdiv1.DataVolumeSource{Snapshot: &cdiv1.DataVolumeSourceSnapshot{}},
+			Storage: &cdiv1.StorageSpec{
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("5Gi"),
+					},
+				},
+			},
+		}
+		vm := createVirtualMachineWithDVTemplate(dvSpec)
+		Expect(k8sClient.Create(ctx, vm)).To(Succeed())
+		sourceDV := &cdiv1.DataVolume{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      testSourceDV,
+				Namespace: testNamespace,
+			},
+			Spec: *dvSpec,
+		}
+		Expect(k8sClient.Create(ctx, sourceDV)).To(Succeed())
+
+		sourcePVC := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      testSourceDV,
+				Namespace: testNamespace,
+				Labels: map[string]string{
+					"test": "label",
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion: "cdi.kubevirt.io/v1beta1",
+						Kind:       "DataVolume",
+						Name:       testSourceDV,
+						UID:        sourceDV.UID,
+					},
+				},
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				VolumeMode:  ptr.To(corev1.PersistentVolumeFilesystem),
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("1Gi"),
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, sourcePVC)).To(Succeed())
+
+		planVM := migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+			VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+				Name: testVM,
+				TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+					{
+						VolumeName: testVolume,
+						DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+							Name:             ptr.To(testTargetDV),
+							StorageClassName: ptr.To(testStorageClass),
+						},
+					},
+				},
+			},
+			SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+				{
+					VolumeName: testVolume,
+					Name:       testSourceDV,
+					Namespace:  testNamespace,
+					SourcePVC:  *sourcePVC,
+				},
+			},
+		}
+		Expect(t.liveMigrateVM(ctx, planVM)).To(Succeed())
+
+		targetDV := &cdiv1.DataVolume{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testTargetDV}, targetDV)).To(Succeed())
+		Expect(targetDV.Labels).ToNot(ContainElement(
+			WithTransform(func(s string) int { return len(s) },
+				BeNumerically(">", kvalidation.DNS1035LabelMaxLength))), "one of the label values is longer than the max k8s allowed length")
+		Expect(targetDV.Labels).To(HaveKeyWithValue(migrations.VirtualMachineStorageMigrationPlanUIDLabel, string(t.Plan.UID)))
+	},
+		Entry("short plan name", "test-plan"),
+		Entry("max length plan name", strings.Repeat("a", kvalidation.DNS1035LabelMaxLength+1)),
+	)
+})
+
+func createVirtualMachineWithDVTemplate(datavolumeSpec *cdiv1.DataVolumeSpec) *virtv1.VirtualMachine {
 	return &virtv1.VirtualMachine{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
+			Name:      testVM,
 			Namespace: testNamespace,
 		},
 		Spec: virtv1.VirtualMachineSpec{
@@ -222,7 +336,7 @@ var _ = Describe("StorageMigration DV Size Determination", func() {
 					},
 				},
 			}
-			vm := createVirtualMachineWithDVTemplate(testVM, dvSpec)
+			vm := createVirtualMachineWithDVTemplate(dvSpec)
 			Expect(k8sClient.Create(ctx, vm)).To(Succeed())
 			sourceDV := &cdiv1.DataVolume{
 				ObjectMeta: metav1.ObjectMeta{
@@ -356,7 +470,7 @@ var _ = Describe("StorageMigration target DV annotations", func() {
 				},
 			},
 		}
-		vm := createVirtualMachineWithDVTemplate(testVM, dvSpec)
+		vm := createVirtualMachineWithDVTemplate(dvSpec)
 		Expect(k8sClient.Create(ctx, vm)).To(Succeed())
 		sourceDV := &cdiv1.DataVolume{
 			ObjectMeta: metav1.ObjectMeta{
