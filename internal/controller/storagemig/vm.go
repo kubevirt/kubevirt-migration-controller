@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -73,7 +74,7 @@ func (t *Task) liveMigrateVM(ctx context.Context, planVM migrations.VirtualMachi
 			return err
 		} else {
 			pvcObjectMeta := apiPVC.ObjectMeta
-			if err := t.createTargetDV(ctx, pvc, size, pvcObjectMeta.Labels); err != nil {
+			if err := t.createTargetDV(ctx, pvc, size, pvcObjectMeta.Labels, pvcObjectMeta.Annotations); err != nil {
 				return err
 			}
 		}
@@ -117,14 +118,16 @@ func (t *Task) determineDataVolumeSize(ctx context.Context, sourcePVC *corev1.Pe
 	return sourcePVC.Spec.Resources.Requests[corev1.ResourceStorage], nil
 }
 
-func (t *Task) createTargetDV(ctx context.Context, pvc migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC, size resource.Quantity, labels map[string]string) error {
+func (t *Task) createTargetDV(ctx context.Context, pvc migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC, size resource.Quantity, labels, annotations map[string]string) error {
 	targetPvc := pvc.DestinationPVC
 
+	cleanTargetAnnotations(annotations)
 	dv := &cdiv1.DataVolume{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      *targetPvc.Name,
-			Namespace: t.Owner.Namespace,
-			Labels:    labels,
+			Name:        *targetPvc.Name,
+			Namespace:   t.Owner.Namespace,
+			Labels:      labels,
+			Annotations: annotations,
 		},
 		Spec: cdiv1.DataVolumeSpec{
 			Source: &cdiv1.DataVolumeSource{
@@ -287,4 +290,18 @@ func (t *Task) refreshCompletedVirtualMachines(ctx context.Context) (bool, error
 		}
 	}
 	return false, nil
+}
+
+func cleanTargetAnnotations(annotations map[string]string) {
+	// Remove annotations indicating the PVC is bound or provisioned
+	delete(annotations, "pv.kubernetes.io/bind-completed")
+	delete(annotations, "volume.beta.kubernetes.io/storage-provisioner")
+	delete(annotations, "pv.kubernetes.io/bound-by-controller")
+	delete(annotations, "volume.kubernetes.io/storage-provisioner")
+	// Remove any cdi related annotations from the PVC
+	for k := range annotations {
+		if strings.HasPrefix(k, "cdi.kubevirt.io") || strings.HasPrefix(k, "volume.kubernetes.io/selected-node") {
+			delete(annotations, k)
+		}
+	}
 }
