@@ -73,7 +73,7 @@ var _ = Describe("StorageMigration VM", func() {
 	})
 
 	DescribeTable("should update the VM for storage migration with a dv template in the vm", func(datavolumeSpec *cdiv1.DataVolumeSpec) {
-		vm := createVirtualMachineWithDVTemplate(testVM, datavolumeSpec)
+		vm := createVirtualMachineWithDVTemplate(datavolumeSpec)
 		Expect(k8sClient.Create(ctx, vm)).To(Succeed())
 		t := &Task{
 			Client: k8sClient,
@@ -185,7 +185,7 @@ var _ = Describe("StorageMigration DV labels", func() {
 				},
 			},
 		}
-		vm := createVirtualMachineWithDVTemplate(testVM, dvSpec)
+		vm := createVirtualMachineWithDVTemplate(dvSpec)
 		Expect(k8sClient.Create(ctx, vm)).To(Succeed())
 		sourceDV := &cdiv1.DataVolume{
 			ObjectMeta: metav1.ObjectMeta{
@@ -260,10 +260,10 @@ var _ = Describe("StorageMigration DV labels", func() {
 	)
 })
 
-func createVirtualMachineWithDVTemplate(name string, datavolumeSpec *cdiv1.DataVolumeSpec) *virtv1.VirtualMachine {
+func createVirtualMachineWithDVTemplate(datavolumeSpec *cdiv1.DataVolumeSpec) *virtv1.VirtualMachine {
 	return &virtv1.VirtualMachine{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
+			Name:      testVM,
 			Namespace: testNamespace,
 		},
 		Spec: virtv1.VirtualMachineSpec{
@@ -336,7 +336,7 @@ var _ = Describe("StorageMigration DV Size Determination", func() {
 					},
 				},
 			}
-			vm := createVirtualMachineWithDVTemplate(testVM, dvSpec)
+			vm := createVirtualMachineWithDVTemplate(dvSpec)
 			Expect(k8sClient.Create(ctx, vm)).To(Succeed())
 			sourceDV := &cdiv1.DataVolume{
 				ObjectMeta: metav1.ObjectMeta{
@@ -470,7 +470,7 @@ var _ = Describe("StorageMigration target DV annotations", func() {
 				},
 			},
 		}
-		vm := createVirtualMachineWithDVTemplate(testVM, dvSpec)
+		vm := createVirtualMachineWithDVTemplate(dvSpec)
 		Expect(k8sClient.Create(ctx, vm)).To(Succeed())
 		sourceDV := &cdiv1.DataVolume{
 			ObjectMeta: metav1.ObjectMeta{
