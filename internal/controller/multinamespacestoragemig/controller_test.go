@@ -110,7 +110,7 @@ func createMultiNamespaceStorageMigrationPlan(name string) *migrations.MultiName
 			Namespaces: []migrations.VirtualMachineStorageMigrationPlanNamespaceSpec{
 				{
 					Name: testutils.TestNamespace,
-					VirtualMachineStorageMigrationPlanSpec: &migrations.VirtualMachineStorageMigrationPlanSpec{
+					VirtualMachineStorageMigrationPlanSpecInline: &migrations.VirtualMachineStorageMigrationPlanSpecInline{
 						VirtualMachines: []migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
 							{
 								Name: "simple-vm",
