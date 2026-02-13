@@ -48,7 +48,8 @@ const (
 	virtHandlerCertCNTemplate = "virt-handler.%s.svc"
 	// Prometheus metric names for migration progress
 	migrationDataProcessedMetric = "kubevirt_vmi_migration_data_processed_bytes"
-	migrationDataTotalMetric     = "kubevirt_vmi_migration_data_total_bytes"
+	migrationDataTotalMetricOld  = "kubevirt_vmi_migration_data_total_bytes"
+	migrationDataTotalMetric     = "kubevirt_vmi_migration_data_bytes_total"
 )
 
 func (t *Task) getLastObservedProgressPercent(ctx context.Context, vmName, namespace string) (string, error) {
@@ -191,8 +192,9 @@ func (t *Task) parseMigrationProgressFromMetrics(metricsReader io.Reader, vmName
 			} else {
 				t.Log.Error(err, "Failed to extract metric value", "line", line)
 			}
-		} else if strings.Contains(line, migrationDataTotalMetric) && strings.Contains(line, vmName) {
+		} else if (strings.Contains(line, migrationDataTotalMetric) || strings.Contains(line, migrationDataTotalMetricOld)) && strings.Contains(line, vmName) {
 			// example: {"line": "kubevirt_vmi_migration_data_total_bytes{name=\"rhel-10-coral-haddock-83\",namespace=\"awels\",node=\"cnvqe-081.lab.eng.tlv2.redhat.com\"} 3.2213303296e+10 1763150823845"}
+			// example: {"line": "kubevirt_vmi_migration_data_bytes_total{name=\"rhel-10-coral-haddock-83\",namespace=\"awels\",node=\"cnvqe-081.lab.eng.tlv2.redhat.com\"} 3.2213303296e+10 1763150823845"}
 			value, err := t.extractMetricValue(line)
 			if err == nil {
 				totalBytes = value
