@@ -26,6 +26,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -91,8 +92,10 @@ func (t *Task) getLastObservedProgressPercent(ctx context.Context, vmName, names
 		return "", nil
 	}
 
+	contextWithTimeout, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
 	// Connect to the pod's metrics endpoint and parse the results
-	progress, err := t.getProgressFromVirtHandlerMetrics(ctx, podIP, vmName)
+	progress, err := t.getProgressFromVirtHandlerMetrics(contextWithTimeout, podIP, vmName)
 	if err != nil {
 		t.Log.Error(err, "Failed to get progress from virt-handler metrics", "podIP", podIP)
 		return "", nil
