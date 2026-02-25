@@ -23,13 +23,18 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	ocpconfigv1 "github.com/openshift/api/config/v1"
+	routev1 "github.com/openshift/api/route/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/kubernetes"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
-
-	migrationclientset "kubevirt.io/kubevirt-migration-controller/pkg/client/clientset/versioned"
+	virtv1 "kubevirt.io/api/core/v1"
+	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
+	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
 	"kubevirt.io/kubevirt-migration-controller/test/utils"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 var (
@@ -38,8 +43,12 @@ var (
 	migrationControllerNamespace = flag.String("migration-controller-namespace", "kubevirt-migration-system",
 		"Namespace of the migration controller")
 	kubeURL = flag.String("kubeurl", "", "URL of the kube API server")
-	kcs     *kubernetes.Clientset
-	mcs     *migrationclientset.Clientset
+	c       client.Client
+)
+
+const (
+	registryProxyCACertName = "registry-proxy-ca"
+	registryProxyNamespace  = "nginx-proxy"
 )
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
@@ -55,6 +64,13 @@ func TestE2E(t *testing.T) {
 
 func BuildTestSuite() {
 	SynchronizedBeforeSuite(func() {}, func() {
+		scheme := runtime.NewScheme()
+		utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+		utilruntime.Must(virtv1.AddToScheme(scheme))
+		utilruntime.Must(cdiv1.AddToScheme(scheme))
+		utilruntime.Must(routev1.AddToScheme(scheme))
+		utilruntime.Must(ocpconfigv1.AddToScheme(scheme))
+		utilruntime.Must(migrations.AddToScheme(scheme))
 		By("checking if cert manager is installed")
 		isCertManagerAlreadyInstalled := utils.IsCertManagerCRDsInstalled(kubectlPath)
 		Expect(isCertManagerAlreadyInstalled).To(BeTrue(), "CertManager is not installed")
@@ -77,12 +93,9 @@ func BuildTestSuite() {
 		restConfig, err := LoadConfig()
 		Expect(err).ToNot(HaveOccurred(), "Unable to load RestConfig")
 		// clients
-		kcs, err = GetKubeClientFromRESTConfig(restConfig)
-		Expect(err).ToNot(HaveOccurred(), "Unable to create K8SClient")
-		Expect(kcs).ToNot(BeNil(), "K8SClient is nil")
-		mcs, err = GetMigrationClient(restConfig)
-		Expect(err).ToNot(HaveOccurred(), "Unable to create MigrationClient")
-		Expect(mcs).ToNot(BeNil(), "MigrationClient is nil")
+		c, err = client.New(restConfig, client.Options{Scheme: scheme})
+		Expect(err).ToNot(HaveOccurred(), "Unable to create Client")
+		Expect(c).ToNot(BeNil(), "Client is nil")
 	})
 }
 
@@ -91,18 +104,6 @@ func LoadConfig() (*rest.Config, error) {
 	return clientcmd.BuildConfigFromFlags(*kubeURL, *kubeConfig)
 }
 
-// GetKubeClientFromRESTConfig provides a function to get a K8s client using hte REST config
-func GetKubeClientFromRESTConfig(config *rest.Config) (*kubernetes.Clientset, error) {
-	config.APIPath = "/apis"
-	config.ContentType = runtime.ContentTypeJSON
-	return kubernetes.NewForConfig(config)
-}
-
-// GetCdiClient gets an instance of a kubernetes client that includes all the CDI extensions.
-func GetMigrationClient(cfg *rest.Config) (*migrationclientset.Clientset, error) {
-	migrationClient, err := migrationclientset.NewForConfig(cfg)
-	if err != nil {
-		return nil, err
-	}
-	return migrationClient, nil
+func GetClient() client.Client {
+	return c
 }

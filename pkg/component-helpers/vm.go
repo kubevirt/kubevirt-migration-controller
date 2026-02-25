@@ -32,6 +32,32 @@ const (
 	StorageLiveMigratable = "StorageLiveMigratable"
 )
 
+// VMIExists returns true if a VirtualMachineInstance exists for the given VM name (VMI has the same name as the VM).
+// If the VMI exists, we use live migration; if it does not exist, the VM is not running and we use offline migration.
+func VMIExists(ctx context.Context, client k8sclient.Client, vmName, namespace string) (bool, error) {
+	vmi := &virtv1.VirtualMachineInstance{}
+	if err := client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: vmName}, vmi); err != nil {
+		if !k8serrors.IsNotFound(err) {
+			return false, err
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
+// IsVMRunning returns true if the VM is running: a VMI exists for it and the VMI's IsRunning() method returns true.
+// If the VMI does not exist, the VM is not running.
+func IsVMRunning(ctx context.Context, client k8sclient.Client, vmName, namespace string) (bool, error) {
+	vmi := &virtv1.VirtualMachineInstance{}
+	if err := client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: vmName}, vmi); err != nil {
+		if k8serrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return vmi.IsRunning(), nil
+}
+
 func ValidateStorageMigrationPossibleForVM(ctx context.Context,
 	client k8sclient.Client,
 	vmName string,
@@ -44,6 +70,15 @@ func ValidateStorageMigrationPossibleForVM(ctx context.Context,
 		}
 		return "", "", err
 	}
+	// Offline migration: VM not running is fine — we will clone DVs. Mark as ready.
+	running, err := IsVMRunning(ctx, client, vmName, namespace)
+	if err != nil {
+		return "", "", err
+	}
+	if !running {
+		return "", "", nil
+	}
+	// Live migration: VM is running, so require Ready and live-migration conditions.
 	if !vm.Status.Ready {
 		return migrations.NotReady, "virtual machine is not ready", nil
 	}

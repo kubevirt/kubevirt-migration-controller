@@ -17,6 +17,10 @@ limitations under the License.
 
 package v1alpha1
 
+type MultiNamespaceVirtualMachineStorageMigrationExpansion interface{}
+
+type MultiNamespaceVirtualMachineStorageMigrationPlanExpansion interface{}
+
 type VirtualMachineStorageMigrationExpansion interface{}
 
 type VirtualMachineStorageMigrationPlanExpansion interface{}

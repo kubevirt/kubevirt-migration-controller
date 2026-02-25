@@ -232,7 +232,7 @@ var _ = Describe("StorageMigration tasks", func() {
 			createVMI()
 		})
 
-		DescribeTable("should properly handle live migration when the phase is BeginLiveMigration", func(ready bool) {
+		DescribeTable("should properly handle live and offlinemigration when the phase is BeginLiveMigration", func(ready bool) {
 			By("marking the VM as ready in the migplan")
 			plan := &migrations.VirtualMachineStorageMigrationPlan{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testutils.TestMigPlanName, Namespace: testutils.TestNamespace}, plan)).To(Succeed())
@@ -251,17 +251,13 @@ var _ = Describe("StorageMigration tasks", func() {
 			migration := &migrations.VirtualMachineStorageMigration{}
 			Expect(controllerReconciler.Client.Get(ctx, typeNamespacedName, migration)).To(Succeed())
 			Expect(migration.Status.Phase).To(Equal(migrations.WaitForLiveMigrationToComplete))
-			if ready {
-				Expect(migration.Status.RunningMigrations).To(ContainElement(migrations.RunningVirtualMachineMigration{
-					Name:     testutils.TestVMName,
-					Progress: "",
-				}))
-			} else {
-				Expect(migration.Status.RunningMigrations).To(BeEmpty())
-			}
+			Expect(migration.Status.RunningMigrations).To(ContainElement(migrations.RunningVirtualMachineMigration{
+				Name:     testutils.TestVMName,
+				Progress: "",
+			}))
 			Expect(migration.Status.CompletedMigrations).To(BeEmpty())
 		}, Entry("all VMs are ready to migrate", true),
-			Entry("all VMs are not ready to migrate", false),
+			Entry("all VMs are ready to migrate (offline)", false),
 		)
 	})
 
@@ -270,6 +266,7 @@ var _ = Describe("StorageMigration tasks", func() {
 			createValidPlanAndMigration(migrations.WaitForLiveMigrationToComplete, ptr.To(migrations.RetentionPolicyKeepSource))
 			createPVCs()
 			createVM()
+			createVMI() // VMI must exist so the controller treats this as live migration (not offline)
 
 			Expect(os.Setenv("CONTROLLER_NAMESPACE", testutils.TestNamespace)).To(Succeed())
 		})

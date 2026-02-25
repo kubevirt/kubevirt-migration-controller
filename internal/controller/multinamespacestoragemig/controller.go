@@ -220,7 +220,9 @@ func (r *MultiNamespaceStorageMigrationReconciler) getVirtualMachineStorageMigra
 	}
 	multiNamespaceMigration := &migrations.MultiNamespaceVirtualMachineStorageMigration{}
 	if err := r.Get(ctx, types.NamespacedName{Name: nameLabel, Namespace: namespaceLabel}, multiNamespaceMigration); err != nil {
-		r.Log.Error(err, "failed to get MultiNamespaceVirtualMachineStorageMigration for VirtualMachineStorageMigration", "multi-namespace-storage-mig-name", nameLabel, "multi-namespace-storage-mig-namespace", namespaceLabel)
+		if !errors.IsNotFound(err) {
+			r.Log.Error(err, "failed to get MultiNamespaceVirtualMachineStorageMigration for VirtualMachineStorageMigration", "multi-namespace-storage-mig-name", nameLabel, "multi-namespace-storage-mig-namespace", namespaceLabel)
+		}
 		return nil
 	}
 	return []reconcile.Request{

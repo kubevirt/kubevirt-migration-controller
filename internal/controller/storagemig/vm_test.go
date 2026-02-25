@@ -146,6 +146,149 @@ var _ = Describe("StorageMigration VM", func() {
 			},
 		}),
 	)
+
+	It("should update the VM for offline storage migration without setting UpdateVolumesStrategy", func() {
+		vm := createVirtualMachineWithDVTemplate(&cdiv1.DataVolumeSpec{
+			Storage: &cdiv1.StorageSpec{
+				StorageClassName: ptr.To(testStorageClass),
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("1Gi"),
+					},
+				},
+			},
+		})
+		Expect(k8sClient.Create(ctx, vm)).To(Succeed())
+		t := &Task{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+		planVM := migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+			SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+				{
+					VolumeName: testVolume,
+					Name:       testSourceDV,
+					Namespace:  testNamespace,
+					SourcePVC:  corev1.PersistentVolumeClaim{},
+				},
+			},
+			VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+				Name: testVM,
+				TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+					{
+						VolumeName: testVolume,
+						DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+							Name:             ptr.To(testTargetDV),
+							StorageClassName: ptr.To(testStorageClass),
+						},
+					},
+				},
+			},
+		}
+		Expect(t.updateVMForOfflineStorageMigration(ctx, vm, planVM)).To(Succeed())
+		updatedVM := &virtv1.VirtualMachine{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testVM}, updatedVM)).To(Succeed())
+		Expect(updatedVM.Spec.UpdateVolumesStrategy).To(BeNil())
+		Expect(updatedVM.Spec.Template.Spec.Volumes).To(HaveLen(1))
+		Expect(updatedVM.Spec.Template.Spec.Volumes[0].VolumeSource.DataVolume).ToNot(BeNil())
+		Expect(updatedVM.Spec.Template.Spec.Volumes[0].VolumeSource.DataVolume.Name).To(Equal(testTargetDV))
+	})
+
+	It("should return an error if the vm is nil or empty for offline update", func() {
+		t := &Task{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+		Expect(t.updateVMForOfflineStorageMigration(ctx, nil, migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{})).To(MatchError("vm is nil or empty"))
+		Expect(t.updateVMForOfflineStorageMigration(ctx, &virtv1.VirtualMachine{}, migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{})).To(MatchError("vm is nil or empty"))
+	})
+})
+
+var _ = Describe("StorageMigration offline completion and getPlanVMByName", func() {
+	ctx := context.Background()
+
+	AfterEach(func() {
+		CleanupResources(ctx, k8sClient)
+	})
+
+	It("getPlanVMByName returns plan VM from ReadyMigrations and InProgressMigrations", func() {
+		t := &Task{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Plan: &migrations.VirtualMachineStorageMigrationPlan{
+				Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+					ReadyMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "ready-vm"}},
+					},
+					InProgressMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "inprogress-vm"}},
+					},
+				},
+			},
+		}
+		Expect(t.getPlanVMByName("ready-vm")).ToNot(BeNil())
+		Expect(t.getPlanVMByName("ready-vm").Name).To(Equal("ready-vm"))
+		Expect(t.getPlanVMByName("inprogress-vm")).ToNot(BeNil())
+		Expect(t.getPlanVMByName("inprogress-vm").Name).To(Equal("inprogress-vm"))
+		Expect(t.getPlanVMByName("missing-vm")).To(BeNil())
+	})
+
+	It("isOfflineMigrationCompleted returns false when not all target DVs are Succeeded", func() {
+		t := &Task{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Log:    logf.Log.WithName("test"),
+			Owner:  &migrations.VirtualMachineStorageMigration{ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace}},
+			Plan: &migrations.VirtualMachineStorageMigrationPlan{
+				Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+					ReadyMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+								Name: testVM,
+								TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+									{DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{Name: ptr.To(testTargetDV)}},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		dv := &cdiv1.DataVolume{
+			ObjectMeta: metav1.ObjectMeta{Name: testTargetDV, Namespace: testNamespace},
+			Spec: cdiv1.DataVolumeSpec{
+				Source: &cdiv1.DataVolumeSource{Blank: &cdiv1.DataVolumeBlankImage{}},
+				Storage: &cdiv1.StorageSpec{
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+					},
+				},
+			},
+			Status: cdiv1.DataVolumeStatus{Phase: cdiv1.Pending},
+		}
+		Expect(k8sClient.Create(ctx, dv)).To(Succeed())
+		completed, err := t.isOfflineMigrationCompleted(ctx, testVM)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(completed).To(BeFalse())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testTargetDV}, dv)).To(Succeed())
+		dv.Status.Phase = cdiv1.Succeeded
+		Expect(k8sClient.Status().Update(ctx, dv)).To(Succeed())
+		completed, err = t.isOfflineMigrationCompleted(ctx, testVM)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(completed).To(BeTrue())
+	})
+
+	It("isOfflineMigrationCompleted returns false when plan VM is not found", func() {
+		t := &Task{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Owner:  &migrations.VirtualMachineStorageMigration{ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace}},
+			Plan:   &migrations.VirtualMachineStorageMigrationPlan{Status: migrations.VirtualMachineStorageMigrationPlanStatus{}},
+		}
+		completed, err := t.isOfflineMigrationCompleted(ctx, "no-such-vm")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(completed).To(BeFalse())
+	})
 })
 
 var _ = Describe("StorageMigration DV labels", func() {

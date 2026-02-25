@@ -30,6 +30,7 @@ import (
 	virtv1 "kubevirt.io/api/core/v1"
 	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
+	componenthelpers "kubevirt.io/kubevirt-migration-controller/pkg/component-helpers"
 )
 
 // Requeue
@@ -159,20 +160,34 @@ func (t *Task) handleBeginLiveMigrationPhase(ctx context.Context) error {
 	checkMigrations := make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, 0)
 	checkMigrations = append(checkMigrations, t.Plan.Status.ReadyMigrations...)
 	checkMigrations = append(checkMigrations, t.Plan.Status.InProgressMigrations...)
-	for _, vm := range checkMigrations {
-		if can, err := t.canVMStorageMigrate(ctx, vm.Name); err != nil {
-			return err
-		} else if !can {
-			t.Log.V(3).Info("VM cannot storage migrate", "vm", vm.Name)
-			continue
-		}
-		if err := t.liveMigrateVM(ctx, vm); err != nil {
+	for _, planVM := range checkMigrations {
+		vmiExists, err := componenthelpers.VMIExists(ctx, t.Client, planVM.Name, t.Owner.Namespace)
+		if err != nil {
 			return err
 		}
-		t.Log.V(3).Info("VM migration is running", "vm", vm.Name)
-		t.Owner.Status.RunningMigrations = append(t.Owner.Status.RunningMigrations, migrations.RunningVirtualMachineMigration{
-			Name: vm.Name,
-		})
+		if vmiExists {
+			if can, err := t.canVMStorageMigrate(ctx, planVM.Name); err != nil {
+				return err
+			} else if !can {
+				t.Log.V(3).Info("VM cannot storage migrate", "vm", planVM.Name)
+				continue
+			}
+			if err := t.liveMigrateVM(ctx, planVM); err != nil {
+				return err
+			}
+			t.Log.V(3).Info("VM live migration is running", "vm", planVM.Name)
+			t.Owner.Status.RunningMigrations = append(t.Owner.Status.RunningMigrations, migrations.RunningVirtualMachineMigration{
+				Name: planVM.Name,
+			})
+		} else {
+			if err := t.offlineMigrateVM(ctx, planVM); err != nil {
+				return err
+			}
+			t.Log.V(3).Info("VM offline migration is running", "vm", planVM.Name)
+			t.Owner.Status.RunningMigrations = append(t.Owner.Status.RunningMigrations, migrations.RunningVirtualMachineMigration{
+				Name: planVM.Name,
+			})
+		}
 	}
 	t.Owner.Status.Phase = migrations.WaitForLiveMigrationToComplete
 	return nil
@@ -181,17 +196,32 @@ func (t *Task) handleBeginLiveMigrationPhase(ctx context.Context) error {
 func (t *Task) handleWaitForLiveMigrationToCompletePhase(ctx context.Context) error {
 	runningMigrations := make([]migrations.RunningVirtualMachineMigration, 0)
 	for _, vm := range t.Owner.Status.RunningMigrations {
-		t.Log.V(5).Info("Checking if live migration is completed", "vm", vm.Name)
-		if ok, err := t.isLiveMigrationCompleted(ctx, vm.Name); err != nil {
+		vmiExists, err := componenthelpers.VMIExists(ctx, t.Client, vm.Name, t.Owner.Namespace)
+		if err != nil {
 			return err
-		} else if !ok {
+		}
+		offline := !vmiExists
+		var completed bool
+		if offline {
+			t.Log.V(5).Info("Checking if offline migration is completed", "vm", vm.Name)
+			completed, err = t.isOfflineMigrationCompleted(ctx, vm.Name)
+		} else {
+			t.Log.V(5).Info("Checking if live migration is completed", "vm", vm.Name)
+			completed, err = t.isLiveMigrationCompleted(ctx, vm.Name)
+		}
+		if err != nil {
+			return err
+		}
+		if !completed {
 			runningMigrations = append(runningMigrations, vm)
-			progress, err := t.getLastObservedProgressPercent(ctx, vm.Name, t.Owner.Namespace)
-			if err != nil {
-				return err
-			}
-			if progress != "" {
-				vm.Progress = progress
+			if !offline {
+				progress, err := t.getLastObservedProgressPercent(ctx, vm.Name, t.Owner.Namespace)
+				if err != nil {
+					return err
+				}
+				if progress != "" {
+					runningMigrations[len(runningMigrations)-1].Progress = progress
+				}
 			}
 			continue
 		}
@@ -209,6 +239,19 @@ func (t *Task) handleCancelingPhase(ctx context.Context) error {
 	runningMigrations := make([]migrations.RunningVirtualMachineMigration, 0)
 	cancelledMigrations := make([]string, 0)
 	for _, vm := range t.Owner.Status.RunningMigrations {
+		vmiExists, err := componenthelpers.VMIExists(ctx, t.Client, vm.Name, t.Owner.Namespace)
+		if err != nil {
+			return err
+		}
+		if !vmiExists {
+			// Offline: revert VM volumes and mark as cancelled; DVs are deleted in CleanupCancelledMigrations.
+			t.Log.V(4).Info("Cancelling offline migration", "vm", vm.Name)
+			if err := t.cancelLiveMigration(ctx, vm.Name); err != nil {
+				return err
+			}
+			cancelledMigrations = append(cancelledMigrations, vm.Name)
+			continue
+		}
 		if ok, err := t.isLiveMigrationCompleted(ctx, vm.Name); err != nil {
 			return err
 		} else if !ok {
@@ -391,7 +434,7 @@ func (t *Task) cleanupCompletedPods(ctx context.Context, completedMigrationsVMNa
 	for _, completedMigrationVMName := range completedMigrationsVMNames {
 		vmi := &virtv1.VirtualMachineInstance{}
 		if err := t.Client.Get(ctx, k8sclient.ObjectKey{Namespace: t.Owner.Namespace, Name: completedMigrationVMName}, vmi); err != nil {
-			if !k8serrors.IsNotFound(err) {
+			if k8serrors.IsNotFound(err) {
 				continue
 			}
 			return false, err

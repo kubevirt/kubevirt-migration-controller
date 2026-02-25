@@ -387,6 +387,12 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 					Expect(reconciler.Client.Create(ctx, vm.DeepCopy())).To(Succeed())
 					updated := &virtv1.VirtualMachine{}
 					Expect(reconciler.Client.Get(ctx, types.NamespacedName{Namespace: vm.Namespace, Name: vm.Name}, updated)).To(Succeed())
+					if vm.Status.Ready {
+						// Create the matching VMI.
+						vmi := testutils.NewVirtualMachineInstance(vm.Name, vm.Namespace, vm.UID, "test-node")
+						vmi.Status.Phase = virtv1.Running
+						Expect(reconciler.Client.Create(ctx, vmi)).To(Succeed())
+					}
 				}
 				sourcePVC := testutils.NewPersistentVolumeClaim(originalPVCName, vms[0].Namespace)
 				Expect(reconciler.Client.Create(ctx, sourcePVC)).To(Succeed())
@@ -416,21 +422,6 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 					),
 				), "Expected conditions differ from found")
 			},
-				Entry("one vm is not ready", func() []*virtv1.VirtualMachine {
-					vm := testutils.NewVirtualMachine("test-vm", testutils.TestNamespace, "test-volume", originalPVCName)
-					vm.Status.Ready = false
-					vm.Status.Conditions = []virtv1.VirtualMachineCondition{}
-					return []*virtv1.VirtualMachine{vm}
-				}, NoVirtualMachinesReadyMessage, corev1.ConditionFalse),
-				Entry("one vm is not ready, one is ready", func() []*virtv1.VirtualMachine {
-					vm := testutils.NewVirtualMachine("test-vm", testutils.TestNamespace, "test-volume", originalPVCName)
-					vm.Status.Ready = false
-					vm.Status.Conditions = []virtv1.VirtualMachineCondition{}
-					vm2 := testutils.NewVirtualMachine("test-vm2", testutils.TestNamespace, "test-volume2", originalPVCName)
-					vm2.Status.Ready = true
-					vm2.Status.Conditions = []virtv1.VirtualMachineCondition{}
-					return []*virtv1.VirtualMachine{vm, vm2}
-				}, NotAllVirtualMachinesReadyMessage, corev1.ConditionTrue),
 				Entry("one vm has storage live migratable condition set to false", func() []*virtv1.VirtualMachine {
 					vm := testutils.NewVirtualMachine("test-vm", testutils.TestNamespace, "test-volume", originalPVCName)
 					vm.Status.Conditions = []virtv1.VirtualMachineCondition{
