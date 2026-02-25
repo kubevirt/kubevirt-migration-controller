@@ -153,13 +153,6 @@ func (t *Task) determineDataVolumeSize(ctx context.Context, sourcePVC *corev1.Pe
 	return sourcePVC.Spec.Resources.Requests[corev1.ResourceStorage], nil
 }
 
-<<<<<<< HEAD
-func (t *Task) createTargetDV(ctx context.Context, pvc migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC, size resource.Quantity, labels map[string]string, annotations map[string]string) error {
-	targetPvc := pvc.DestinationPVC
-
-	if annotations != nil {
-		cleanTargetAnnotations(annotations)
-=======
 // createTargetDV creates a DataVolume for the target PVC. If sourcePVCName is nil or empty, the DV source is blank;
 // otherwise it clones from the named PVC in the owner namespace (for offline migration).
 func (t *Task) createTargetDV(ctx context.Context, pvc migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC, size resource.Quantity, labels, annotations map[string]string, sourcePVCName *string) error {
@@ -178,7 +171,6 @@ func (t *Task) createTargetDV(ctx context.Context, pvc migrations.VirtualMachine
 		source = cdiv1.DataVolumeSource{
 			Blank: &cdiv1.DataVolumeBlankImage{},
 		}
->>>>>>> 8852a09 (Implement offline migration of VMs)
 	}
 	dv := &cdiv1.DataVolume{
 		ObjectMeta: metav1.ObjectMeta{

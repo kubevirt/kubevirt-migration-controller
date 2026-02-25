@@ -1,0 +1,123 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-registry-proxy-config
+data:
+  nginx.conf: |
+    user nginx;
+    worker_processes auto;
+    events { worker_connections 1024; }
+
+    http {
+        proxy_cache_path /var/cache/nginx/quay levels=1:2 keys_zone=quay_cache:100m max_size=20g inactive=60d;
+        proxy_cache_methods GET HEAD;
+        proxy_cache_convert_head on;
+
+        # Force IPv4 to prevent "Network Unreachable" on cluster egress
+        resolver 10.96.0.10 8.8.8.8 valid=30s ipv6=off;
+
+        add_header X-Cache-Status $upstream_cache_status;
+
+        map $upstream_status $nocache {
+            ~^200$ 0;
+            default 1;
+        }
+
+        server {
+            listen 443 ssl;
+            ssl_certificate /etc/nginx/certs/tls.crt;
+            ssl_certificate_key /etc/nginx/certs/tls.key;
+
+            location = /v2 {
+                return 301 /v2/;
+            }
+
+            # --- Primary Registry API Logic ---
+            location /v2/ {
+                proxy_set_header Host quay.io;
+                proxy_ssl_server_name on;
+                proxy_ssl_name quay.io;
+                proxy_pass https://quay.io;
+
+                # Capture the redirect location into a variable
+                set $saved_location $upstream_http_location;
+
+                proxy_intercept_errors on;
+                error_page 301 302 307 = @handle_redirect;
+
+                proxy_no_cache $nocache;
+                proxy_cache_bypass $nocache;
+
+                # Cache Manifests and Tags
+                proxy_cache quay_cache;
+                proxy_cache_valid 200 60d;
+                proxy_cache_valid 301 302 307 0;
+                proxy_cache_key "$uri";
+                proxy_cache_lock on;
+                proxy_cache_use_stale error timeout updating;
+            }
+
+            # --- Blob Redirect Logic (S3/Storage Backend) ---
+            location @handle_redirect {
+                set $final_url $upstream_http_location;
+                if ($final_url = "") {
+                    set $final_url $saved_location; 
+                }
+
+                if ($final_url = "") {
+                    return 500 "Nginx error: could not capture S3 redirect url";
+                }
+
+                # Extract hostname for SSL SNI verification
+                set $p_host_internal "";
+                if ($final_url ~* "^https?://(?<h>[^/]+)") {
+                    set $p_host_internal $h;
+                }
+
+                proxy_pass_request_headers off;
+                proxy_pass_request_body off;
+                proxy_buffering on;
+                proxy_method GET;
+
+                # Clear headers that break S3 signatures
+                proxy_set_header Host $p_host_internal;
+                proxy_set_header Authorization "";
+
+                add_header X-Debug-URL $final_url;
+                add_header X-Debug-Cache-Key $uri;
+                add_header X-Cache-Status $upstream_cache_status;
+
+                proxy_no_cache 0;
+                proxy_cache_bypass 0;
+
+                proxy_ignore_headers Cache-Control Expires Set-Cookie Vary;
+
+                proxy_hide_header 'Access-Control-Allow-Origin';
+                proxy_hide_header 'Access-Control-Allow-Methods';
+                proxy_hide_header 'X-Amz-Request-Id';
+                proxy_hide_header 'X-Amz-Id-2';
+                proxy_hide_header 'Set-Cookie';
+
+                proxy_ssl_name $p_host_internal;
+                proxy_ssl_server_name on;
+                proxy_ssl_verify off;
+                proxy_ssl_protocols TLSv1.2 TLSv1.3;
+
+                # Buffer and performance tuning for large blobs
+                proxy_buffer_size 128k;
+                proxy_buffers 4 256k;
+                proxy_busy_buffers_size 256k;
+                proxy_http_version 1.1;
+
+                # Blob Caching Logic
+                proxy_cache quay_cache;
+                proxy_cache_key "$uri";
+                proxy_cache_valid 200 60d;
+                proxy_cache_valid 301 302 307 0; # Never cache the redirect itself
+                proxy_cache_use_stale error timeout updating;
+                proxy_cache_lock on;
+
+                proxy_pass $final_url;
+            }
+        }
+    }

@@ -34,6 +34,7 @@ import (
 	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
 	"kubevirt.io/kubevirt-migration-controller/test/utils"
+	"kubevirt.io/kubevirt-migration-controller/test/utils/containerdisk"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -42,13 +43,15 @@ var (
 	kubeConfig                   = flag.String("test-kubeconfig", "", "Path to the kubeconfig file")
 	migrationControllerNamespace = flag.String("migration-controller-namespace", "kubevirt-migration-system",
 		"Namespace of the migration controller")
-	kubeURL = flag.String("kubeurl", "", "URL of the kube API server")
-	c       client.Client
+	kubeURL        = flag.String("kubeurl", "", "URL of the kube API server")
+	registryPrefix = flag.String("registry-prefix", "registry-proxy.nginx-proxy.svc/kubevirt",
+		"Prefix of the registry")
+	registryProxyNamespace = flag.String("registry-proxy-namespace", "nginx-proxy", "Namespace of the registry proxy")
+	c                      client.Client
 )
 
 const (
 	registryProxyCACertName = "registry-proxy-ca"
-	registryProxyNamespace  = "nginx-proxy"
 )
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
@@ -96,6 +99,7 @@ func BuildTestSuite() {
 		c, err = client.New(restConfig, client.Options{Scheme: scheme})
 		Expect(err).ToNot(HaveOccurred(), "Unable to create Client")
 		Expect(c).ToNot(BeNil(), "Client is nil")
+		containerdisk.RegistryPrefix = *registryPrefix
 	})
 }
 

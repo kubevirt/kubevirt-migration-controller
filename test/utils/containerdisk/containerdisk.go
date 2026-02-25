@@ -37,6 +37,10 @@ const (
 	KernelBoot                        ContainerDisk = "alpine-ext-kernel-boot-demo"
 )
 
+var (
+	RegistryPrefix string
+)
+
 const (
 	FedoraVolumeSize = "6Gi"
 	CirrosVolumeSize = "512Mi"
@@ -44,19 +48,18 @@ const (
 	BlankVolumeSize  = "16Mi"
 	VirtioVolumeSize = "750Mi"
 
-	kubevirtciRegistryPrefix = "registry-proxy.nginx-proxy.svc/kubevirt"
-	kubevirtciVersionTag     = "v1.7.1"
+	kubevirtVersionTag = "v1.7.1"
 )
 
 // ContainerDiskFor takes the name of an image and returns the full
 // registry diks image path.
 // Use the ContainerDisk* constants as input values.
 func ContainerDiskFor(name ContainerDisk) string {
-	return ContainerDiskFromRegistryFor(kubevirtciRegistryPrefix, name)
+	return ContainerDiskFromRegistryFor(RegistryPrefix, name)
 }
 
 func DataVolumeImportUrlForContainerDisk(name ContainerDisk) string {
-	return DataVolumeImportUrlFromRegistryForContainerDisk(kubevirtciRegistryPrefix, name)
+	return DataVolumeImportUrlFromRegistryForContainerDisk(RegistryPrefix, name)
 }
 
 func DataVolumeImportUrlFromRegistryForContainerDisk(registry string, name ContainerDisk) string {
@@ -66,13 +69,13 @@ func DataVolumeImportUrlFromRegistryForContainerDisk(registry string, name Conta
 func ContainerDiskFromRegistryFor(registry string, name ContainerDisk) string {
 	switch name {
 	case ContainerDiskCirros, ContainerDiskAlpine, ContainerDiskCirrosCustomLocation:
-		return fmt.Sprintf("%s/%s-container-disk-demo:%s", registry, name, kubevirtciVersionTag)
+		return fmt.Sprintf("%s/%s-container-disk-demo:%s", registry, name, kubevirtVersionTag)
 	case ContainerDiskVirtio:
-		return fmt.Sprintf("%s/virtio-container-disk:%s", registry, kubevirtciVersionTag)
+		return fmt.Sprintf("%s/virtio-container-disk:%s", registry, kubevirtVersionTag)
 	case ContainerDiskFedoraTestTooling, ContainerDiskFedoraRealtime, ContainerDiskAlpineTestTooling:
-		return fmt.Sprintf("%s/%s-container-disk:%s", registry, name, kubevirtciVersionTag)
+		return fmt.Sprintf("%s/%s-container-disk:%s", registry, name, kubevirtVersionTag)
 	case KernelBoot:
-		return fmt.Sprintf("%s/alpine-ext-kernel-boot-demo:%s", registry, kubevirtciVersionTag)
+		return fmt.Sprintf("%s/alpine-ext-kernel-boot-demo:%s", registry, kubevirtVersionTag)
 	}
 
 	panic(fmt.Sprintf("Unsupported registry disk %s", name))

@@ -134,7 +134,7 @@ var _ = Describe("MigPlan", func() {
 		copyProxyCA := func(namespace string) {
 			By("Copying proxy CA to test namespace")
 			ca := &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: registryProxyCACertName, Namespace: registryProxyNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: registryProxyCACertName, Namespace: *registryProxyNamespace},
 			}
 			err := c.Get(context.TODO(), client.ObjectKeyFromObject(ca), ca, &client.GetOptions{})
 			Expect(err).NotTo(HaveOccurred())
