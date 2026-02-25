@@ -1,6 +1,0 @@
-# This patch adds the thanos querier client url to the controller
-- op: add
-  path: /spec/template/spec/containers/0/env/0
-  value:
-    name: PROMETHEUS_URL
-    value: https://thanos-querier-openshift-monitoring.apps.bm14a-tlv2.abi.cnv-qe.rhood.us
