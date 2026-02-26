@@ -523,6 +523,69 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				Expect(updated.Status.ReadyMigrations[0].VirtualMachineStorageMigrationPlanVirtualMachine.TargetMigrationPVCs[0].DestinationPVC.StorageClassName).ToNot(BeNil())
 				Expect(*updated.Status.ReadyMigrations[0].VirtualMachineStorageMigrationPlanVirtualMachine.TargetMigrationPVCs[0].DestinationPVC.StorageClassName).To(Equal("virt-default-storage-class"))
 			})
+
+			It("sets warning condition when filesystem PVC lacks cdi.kubevirt.io/storage.contentType: kubevirt annotation", func() {
+				By("creating a VM and a filesystem PVC without the annotation")
+				vm := testutils.NewVirtualMachine(testVMName, testutils.TestNamespace, testVolumeName, originalPVCName)
+				Expect(reconciler.Client.Create(ctx, vm)).To(Succeed())
+				pvc := testutils.NewPersistentVolumeClaim(originalPVCName, vm.Namespace)
+				Expect(reconciler.Client.Create(ctx, pvc)).To(Succeed())
+				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName, testutils.NewVirtualMachine(testVMName, testutils.TestNamespace, testVolumeName, originalPVCName))
+				Expect(reconciler.Client.Create(ctx, migPlan)).To(Succeed())
+
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				updated := &migrations.VirtualMachineStorageMigrationPlan{}
+				Expect(reconciler.Client.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+				Expect(updated.Status.ReadyMigrations).To(HaveLen(1), "plan should remain ready")
+				Expect(updated.Status.Conditions.List).To(ContainElement(
+					And(
+						HaveField("Type", FilesystemPVCsWithoutKubeVirtContentTypeType),
+						HaveField("Category", migrations.Warn),
+						HaveField("Status", corev1.ConditionTrue),
+						HaveField("Message", ContainSubstring("cdi.kubevirt.io/storage.contentType: kubevirt")),
+					),
+				), "expected warning condition for filesystem PVC without annotation")
+			})
+
+			It("does not set warning condition when filesystem PVC has di.kubevirt.io/storage.contentType: kubevirt annotation", func() {
+				By("creating a VM and a filesystem PVC with the annotation")
+				vm := testutils.NewVirtualMachine(testVMName, testutils.TestNamespace, testVolumeName, originalPVCName)
+				Expect(reconciler.Client.Create(ctx, vm)).To(Succeed())
+				pvc := testutils.NewPersistentVolumeClaim(originalPVCName, vm.Namespace)
+				pvc.Annotations = map[string]string{StorageContentTypeAnnotation: StorageContentTypeKubeVirt}
+				Expect(reconciler.Client.Create(ctx, pvc)).To(Succeed())
+				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName, testutils.NewVirtualMachine(testVMName, testutils.TestNamespace, testVolumeName, originalPVCName))
+				Expect(reconciler.Client.Create(ctx, migPlan)).To(Succeed())
+
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				updated := &migrations.VirtualMachineStorageMigrationPlan{}
+				Expect(reconciler.Client.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+				Expect(updated.Status.ReadyMigrations).To(HaveLen(1))
+				Expect(updated.Status.Conditions.List).NotTo(ContainElement(HaveField("Type", FilesystemPVCsWithoutKubeVirtContentTypeType)))
+			})
+
+			It("does not set warning condition when PVC has block volume mode", func() {
+				By("creating a VM and a block PVC without the annotation")
+				vm := testutils.NewVirtualMachine(testVMName, testutils.TestNamespace, testVolumeName, originalPVCName)
+				Expect(reconciler.Client.Create(ctx, vm)).To(Succeed())
+				pvc := testutils.NewPersistentVolumeClaim(originalPVCName, vm.Namespace)
+				pvc.Spec.VolumeMode = ptr.To(corev1.PersistentVolumeBlock)
+				Expect(reconciler.Client.Create(ctx, pvc)).To(Succeed())
+				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName, testutils.NewVirtualMachine(testVMName, testutils.TestNamespace, testVolumeName, originalPVCName))
+				Expect(reconciler.Client.Create(ctx, migPlan)).To(Succeed())
+
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				updated := &migrations.VirtualMachineStorageMigrationPlan{}
+				Expect(reconciler.Client.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+				Expect(updated.Status.ReadyMigrations).To(HaveLen(1))
+				Expect(updated.Status.Conditions.List).NotTo(ContainElement(HaveField("Type", FilesystemPVCsWithoutKubeVirtContentTypeType)))
+			})
 		})
 	})
 })
