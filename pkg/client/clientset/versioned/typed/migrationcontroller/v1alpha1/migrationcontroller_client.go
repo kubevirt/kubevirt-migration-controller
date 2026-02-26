@@ -27,6 +27,8 @@ import (
 
 type MigrationcontrollerV1alpha1Interface interface {
 	RESTClient() rest.Interface
+	MultiNamespaceVirtualMachineStorageMigrationsGetter
+	MultiNamespaceVirtualMachineStorageMigrationPlansGetter
 	VirtualMachineStorageMigrationsGetter
 	VirtualMachineStorageMigrationPlansGetter
 }
@@ -34,6 +36,14 @@ type MigrationcontrollerV1alpha1Interface interface {
 // MigrationcontrollerV1alpha1Client is used to interact with features provided by the migrationcontroller group.
 type MigrationcontrollerV1alpha1Client struct {
 	restClient rest.Interface
+}
+
+func (c *MigrationcontrollerV1alpha1Client) MultiNamespaceVirtualMachineStorageMigrations(namespace string) MultiNamespaceVirtualMachineStorageMigrationInterface {
+	return newMultiNamespaceVirtualMachineStorageMigrations(c, namespace)
+}
+
+func (c *MigrationcontrollerV1alpha1Client) MultiNamespaceVirtualMachineStorageMigrationPlans(namespace string) MultiNamespaceVirtualMachineStorageMigrationPlanInterface {
+	return newMultiNamespaceVirtualMachineStorageMigrationPlans(c, namespace)
 }
 
 func (c *MigrationcontrollerV1alpha1Client) VirtualMachineStorageMigrations(namespace string) VirtualMachineStorageMigrationInterface {

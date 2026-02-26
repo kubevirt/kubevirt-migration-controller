@@ -32,3 +32,20 @@ if [[ "$KUBEVIRT_PROVIDER" != "external" ]]; then
 _kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/${CERT_MANAGER_VERSION}/cert-manager.yaml
 _kubectl wait deployment.apps/cert-manager-webhook --for condition=Available --namespace cert-manager --timeout 5m
 fi
+
+function start_nginx_proxy() {
+  # check if nginx proxy is already installed
+  if _kubectl get namespace nginx-proxy &> /dev/null; then
+    echo "Nginx proxy is already installed"
+    return
+  fi
+  _kubectl create namespace nginx-proxy
+  _kubectl apply -f nginx-proxy/nginx-ca.yaml -n nginx-proxy
+  _kubectl apply -f nginx-proxy/nginx-cm.yaml -n nginx-proxy
+  _kubectl apply -f nginx-proxy/nginx-secret.yaml -n nginx-proxy
+  _kubectl apply -f nginx-proxy/nginx-svc.yaml -n nginx-proxy
+  _kubectl apply -f nginx-proxy/nginx-deployment.yaml -n nginx-proxy
+  _kubectl rollout status -n nginx-proxy deployment/nginx-registry-proxy --timeout=120s
+}
+
+start_nginx_proxy

@@ -51,6 +51,39 @@ func (t *Task) canVMStorageMigrate(ctx context.Context, vmName string) (bool, er
 	return true, nil
 }
 
+func (t *Task) offlineMigrateVM(ctx context.Context, planVM migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine) error {
+	vm := &virtv1.VirtualMachine{}
+	if err := t.Client.Get(ctx, types.NamespacedName{Namespace: t.Owner.Namespace, Name: planVM.Name}, vm); err != nil {
+		return err
+	}
+	if _, message, err := componenthelpers.ValidatePVCsMatchForVM(ctx, t.Client, &planVM, t.Owner.Namespace); err != nil {
+		return err
+	} else if message != "" {
+		return errors.New(message)
+	}
+
+	for i, pvc := range planVM.TargetMigrationPVCs {
+		apiPVC := &corev1.PersistentVolumeClaim{}
+		if err := t.Client.Get(ctx, types.NamespacedName{Namespace: planVM.SourcePVCs[i].Namespace, Name: planVM.SourcePVCs[i].Name}, apiPVC); err != nil {
+			return err
+		}
+		size, err := t.determineSourcePVCSize(ctx, apiPVC)
+		if err != nil {
+			return err
+		}
+		pvcObjectMeta := apiPVC.ObjectMeta
+		if err := t.createTargetDV(ctx, pvc, size, pvcObjectMeta.Labels, pvcObjectMeta.Annotations, ptr.To(planVM.SourcePVCs[i].Name)); err != nil {
+			return err
+		}
+	}
+
+	t.Log.V(3).Info("Updating VM for offline storage migration", "vm", vm.Name)
+	if err := t.updateVMForOfflineStorageMigration(ctx, vm, planVM); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (t *Task) liveMigrateVM(ctx context.Context, planVM migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine) error {
 	// Get the virtual machine
 	vm := &virtv1.VirtualMachine{}
@@ -76,13 +109,13 @@ func (t *Task) liveMigrateVM(ctx context.Context, planVM migrations.VirtualMachi
 			return err
 		} else {
 			pvcObjectMeta := apiPVC.ObjectMeta
-			if err := t.createTargetDV(ctx, pvc, size, pvcObjectMeta.Labels, pvcObjectMeta.Annotations); err != nil {
+			if err := t.createTargetDV(ctx, pvc, size, pvcObjectMeta.Labels, pvcObjectMeta.Annotations, nil); err != nil {
 				return err
 			}
 		}
 	}
 
-	t.Log.Info("Updating VM for storage migration", "vm", vm.Name)
+	t.Log.V(3).Info("Updating VM for storage migration", "vm", vm.Name)
 	// Update the VM to use the new PVCs.
 	if err := t.updateVMForStorageMigration(ctx, vm, planVM); err != nil {
 		return err
@@ -120,11 +153,24 @@ func (t *Task) determineDataVolumeSize(ctx context.Context, sourcePVC *corev1.Pe
 	return sourcePVC.Spec.Resources.Requests[corev1.ResourceStorage], nil
 }
 
-func (t *Task) createTargetDV(ctx context.Context, pvc migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC, size resource.Quantity, labels map[string]string, annotations map[string]string) error {
+// createTargetDV creates a DataVolume for the target PVC. If sourcePVCName is nil or empty, the DV source is blank;
+// otherwise it clones from the named PVC in the owner namespace (for offline migration).
+func (t *Task) createTargetDV(ctx context.Context, pvc migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC, size resource.Quantity, labels, annotations map[string]string, sourcePVCName *string) error {
 	targetPvc := pvc.DestinationPVC
 
-	if annotations != nil {
-		cleanTargetAnnotations(annotations)
+	cleanTargetAnnotations(annotations)
+	var source cdiv1.DataVolumeSource
+	if sourcePVCName != nil && *sourcePVCName != "" {
+		source = cdiv1.DataVolumeSource{
+			PVC: &cdiv1.DataVolumeSourcePVC{
+				Namespace: t.Owner.Namespace,
+				Name:      *sourcePVCName,
+			},
+		}
+	} else {
+		source = cdiv1.DataVolumeSource{
+			Blank: &cdiv1.DataVolumeBlankImage{},
+		}
 	}
 	dv := &cdiv1.DataVolume{
 		ObjectMeta: metav1.ObjectMeta{
@@ -134,9 +180,7 @@ func (t *Task) createTargetDV(ctx context.Context, pvc migrations.VirtualMachine
 			Annotations: annotations,
 		},
 		Spec: cdiv1.DataVolumeSpec{
-			Source: &cdiv1.DataVolumeSource{
-				Blank: &cdiv1.DataVolumeBlankImage{},
-			},
+			Source: &source,
 			Storage: &cdiv1.StorageSpec{
 				Resources: corev1.VolumeResourceRequirements{
 					Requests: corev1.ResourceList{
@@ -180,9 +224,11 @@ func (t *Task) createTargetDV(ctx context.Context, pvc migrations.VirtualMachine
 	return nil
 }
 
-func (t *Task) updateVMForStorageMigration(ctx context.Context, vm *virtv1.VirtualMachine, planVM migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine) error {
+// prepareVMForStorageMigration returns a deep copy of the VM with volume and DataVolumeTemplate
+// fields updated to use the plan's target PVCs. It does not set UpdateVolumesStrategy.
+func (t *Task) prepareVMForStorageMigration(vm *virtv1.VirtualMachine, planVM migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine) (*virtv1.VirtualMachine, error) {
 	if vm == nil || vm.Name == "" {
-		return fmt.Errorf("vm is nil or empty")
+		return nil, fmt.Errorf("vm is nil or empty")
 	}
 
 	planTargetPVCMap := make(map[string]migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC)
@@ -191,10 +237,7 @@ func (t *Task) updateVMForStorageMigration(ctx context.Context, vm *virtv1.Virtu
 	}
 
 	vmCopy := vm.DeepCopy()
-	// Ensure the VM migration strategy is set properly.
-	vmCopy.Spec.UpdateVolumesStrategy = ptr.To(virtv1.UpdateVolumesStrategyMigration)
 
-	// Update the VM to use the new PVCs.
 	for i, volume := range vm.Spec.Template.Spec.Volumes {
 		if planPVC, ok := planTargetPVCMap[volume.Name]; ok {
 			if volume.PersistentVolumeClaim != nil {
@@ -210,7 +253,6 @@ func (t *Task) updateVMForStorageMigration(ctx context.Context, vm *virtv1.Virtu
 	for _, pvc := range planVM.SourcePVCs {
 		planPVCNameMap[pvc.Name] = pvc.VolumeName
 	}
-	// Update the DataVolumeTemplates to match the new PVCs.
 	for i, dvTemplate := range vmCopy.Spec.DataVolumeTemplates {
 		if _, ok := planPVCNameMap[dvTemplate.Name]; ok {
 			volumeName := planPVCNameMap[dvTemplate.Name]
@@ -224,6 +266,12 @@ func (t *Task) updateVMForStorageMigration(ctx context.Context, vm *virtv1.Virtu
 			}
 		}
 	}
+
+	return vmCopy, nil
+}
+
+// patchVMIfChanged patches the VM with the modified copy when the copy differs from the original.
+func (t *Task) patchVMIfChanged(ctx context.Context, vm, vmCopy *virtv1.VirtualMachine) error {
 	if !apiequality.Semantic.DeepEqual(vm, vmCopy) {
 		data, err := client.MergeFrom(vm).Data(vmCopy)
 		if err != nil {
@@ -235,6 +283,25 @@ func (t *Task) updateVMForStorageMigration(ctx context.Context, vm *virtv1.Virtu
 		}
 	}
 	return nil
+}
+
+func (t *Task) updateVMForStorageMigration(ctx context.Context, vm *virtv1.VirtualMachine, planVM migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine) error {
+	vmCopy, err := t.prepareVMForStorageMigration(vm, planVM)
+	if err != nil {
+		return err
+	}
+	vmCopy.Spec.UpdateVolumesStrategy = ptr.To(virtv1.UpdateVolumesStrategyMigration)
+	return t.patchVMIfChanged(ctx, vm, vmCopy)
+}
+
+// updateVMForOfflineStorageMigration updates the VM to use the target clone DVs without setting UpdateVolumesStrategy.
+// This prevents the VM from starting until the clone DVs reach Succeeded.
+func (t *Task) updateVMForOfflineStorageMigration(ctx context.Context, vm *virtv1.VirtualMachine, planVM migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine) error {
+	vmCopy, err := t.prepareVMForStorageMigration(vm, planVM)
+	if err != nil {
+		return err
+	}
+	return t.patchVMIfChanged(ctx, vm, vmCopy)
 }
 
 // Update the VirtualMachineStorageMigrationPlan to trigger a refresh of virtual machine statuses.
@@ -295,6 +362,42 @@ func (t *Task) refreshCompletedVirtualMachines(ctx context.Context) (bool, error
 		}
 	}
 	return false, nil
+}
+
+// isOfflineMigrationCompleted returns true when all target DataVolumes for the VM have phase Succeeded.
+func (t *Task) isOfflineMigrationCompleted(ctx context.Context, vmName string) (bool, error) {
+	planVM := t.getPlanVMByName(vmName)
+	if planVM == nil {
+		return false, nil
+	}
+	for _, targetPVC := range planVM.TargetMigrationPVCs {
+		dv := &cdiv1.DataVolume{}
+		if err := t.Client.Get(ctx, types.NamespacedName{Namespace: t.Owner.Namespace, Name: *targetPVC.DestinationPVC.Name}, dv); err != nil {
+			if k8serrors.IsNotFound(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		if dv.Status.Phase != cdiv1.Succeeded {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// getPlanVMByName returns the plan VM status for the given VM name from ReadyMigrations or InProgressMigrations.
+func (t *Task) getPlanVMByName(vmName string) *migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine {
+	for i := range t.Plan.Status.ReadyMigrations {
+		if t.Plan.Status.ReadyMigrations[i].Name == vmName {
+			return &t.Plan.Status.ReadyMigrations[i]
+		}
+	}
+	for i := range t.Plan.Status.InProgressMigrations {
+		if t.Plan.Status.InProgressMigrations[i].Name == vmName {
+			return &t.Plan.Status.InProgressMigrations[i]
+		}
+	}
+	return nil
 }
 
 func cleanTargetAnnotations(annotations map[string]string) {

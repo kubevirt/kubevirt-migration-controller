@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry-proxy
+spec:
+  selector:
+    app: registry-proxy # Must match the label in your Deployment's template
+  ports:
+    - protocol: TCP
+      port: 443         # Port accessible to the cluster
+      targetPort: 443   # Port NGINX is listening on in the pod
+  type: ClusterIP      # Internal-only access
