@@ -36,11 +36,7 @@ import (
 	virtv1 "kubevirt.io/api/core/v1"
 	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
 	testutils "kubevirt.io/kubevirt-migration-controller/internal/controller/testutils"
-	// +kubebuilder:scaffold:imports
 )
-
-// These tests use Ginkgo (BDD-style Go testing framework). Refer to
-// http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
 
 var (
 	ctx       context.Context
@@ -56,7 +52,7 @@ const (
 func TestControllers(t *testing.T) {
 	RegisterFailHandler(Fail)
 
-	RunSpecs(t, "MultiNamespaceStorageMigrationPlan Controller Suite")
+	RunSpecs(t, "MultiNamespace Storage Migration Plan Controller Suite")
 }
 
 var _ = BeforeSuite(func() {
