@@ -26,7 +26,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
@@ -35,6 +34,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	controllerutil "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
@@ -88,11 +88,13 @@ func (r *StorageMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	if migration.DeletionTimestamp != nil {
 		log.V(3).Info("VirtualMachineStorageMigration is being deleted")
-		migration.RemoveFinalizer(migrations.VirtualMachineStorageMigrationFinalizer, log)
-		if err := r.Update(context.TODO(), migration); err != nil {
-			return reconcile.Result{}, err
+		if migration.Status.Phase == migrations.Canceled || migration.Status.Phase == migrations.Completed {
+			migration.RemoveFinalizer(migrations.VirtualMachineStorageMigrationFinalizer, log)
+			if err := r.Update(context.TODO(), migration); err != nil {
+				return reconcile.Result{}, err
+			}
+			return reconcile.Result{}, nil
 		}
-		return reconcile.Result{}, nil
 	}
 
 	origMigration := migration.DeepCopy()
@@ -118,7 +120,9 @@ func (r *StorageMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		migration.Status.DeleteCondition(migrations.InvalidPlanRef)
 
 		// Owner Reference
-		r.setOwnerReference(plan, migration)
+		if err := r.setOwnerReference(plan, migration); err != nil {
+			return reconcile.Result{}, err
+		}
 
 		// Validate
 		r.validate(plan, migration)
@@ -136,8 +140,8 @@ func (r *StorageMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	requeueAfter := NoReQ
 
 	// Migrate
-	if !migration.Status.HasBlockerCondition() {
-		log.V(5).Info("Starting VirtualMachineStorageMigration")
+	if !migration.Status.HasBlockerCondition() || migration.DeletionTimestamp != nil {
+		log.V(3).Info("Starting VirtualMachineStorageMigration", "deletionTimestamp", migration.DeletionTimestamp)
 		var err error
 		requeueAfter, err = r.migrate(ctx, plan, migration)
 		if err != nil {
@@ -169,31 +173,17 @@ func (r *StorageMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 }
 
 // Set the owner reference is set to the plan.
-func (r *StorageMigrationReconciler) setOwnerReference(plan *migrations.VirtualMachineStorageMigrationPlan, migration *migrations.VirtualMachineStorageMigration) {
+func (r *StorageMigrationReconciler) setOwnerReference(plan *migrations.VirtualMachineStorageMigrationPlan, migration *migrations.VirtualMachineStorageMigration) error {
 	if plan == nil {
-		r.Log.Info("No plan found")
-		return
+		r.Log.Info("no plan found")
+		return fmt.Errorf("no plan found")
 	}
-	for i := range migration.OwnerReferences {
-		ref := &migration.OwnerReferences[i]
-		if ref.Kind == plan.Kind {
-			ref.APIVersion = plan.APIVersion
-			ref.Name = plan.Name
-			ref.UID = plan.UID
-			r.Log.V(5).Info("Owner reference already set")
-			return
-		}
+	if err := controllerutil.SetControllerReference(plan, migration, r.Scheme); err != nil {
+		r.Log.Error(err, "Failed to set owner reference")
+		return err
 	}
-	r.Log.V(5).Info("Adding owner reference", "plan metadata", plan.TypeMeta)
-	migration.OwnerReferences = append(
-		migration.OwnerReferences,
-		metav1.OwnerReference{
-			APIVersion: plan.APIVersion,
-			Kind:       plan.Kind,
-			Name:       plan.Name,
-			UID:        plan.UID,
-		})
 	r.Log.V(5).Info("migration owner reference", "owner reference", migration.OwnerReferences)
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

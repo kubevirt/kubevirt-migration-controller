@@ -70,7 +70,7 @@ var _ = Describe("StorageMigration tasks", func() {
 			Message:  "plan is ready",
 		})
 		Expect(k8sClient.Status().Update(ctx, migplan)).To(Succeed())
-		migration := createMigration(testutils.TestMigMigrationName)
+		migration := createMigration()
 		Expect(k8sClient.Create(ctx, migration)).To(Succeed())
 		migration.Status.Phase = phase
 		Expect(k8sClient.Status().Update(ctx, migration)).To(Succeed())

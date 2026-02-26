@@ -22,7 +22,6 @@ rules:
   - ""
   resources:
   - persistentvolumes
-  - configmaps
   - namespaces
   verbs:
   - list
@@ -122,6 +121,37 @@ rules:
   - storage.k8s.io
   resources:
   - storageclasses
+  verbs:
+  - list
+  - watch
+- apiGroups:
+  - config.openshift.io
+  resources:
+  - clusterversions
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: manager-role
+  namespace: kubevirt
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  resourceNames:
+  - migration-controller
+  verbs:
+  - list
+  - watch
+- apiGroups:
+  - route.openshift.io
+  resources:
+  - routes
+  resourceNames:
+  - prometheus-k8s
   verbs:
   - list
   - watch

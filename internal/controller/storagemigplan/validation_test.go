@@ -17,6 +17,7 @@ package storagemigplan
 
 import (
 	"context"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -327,6 +328,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				Entry("target pvc name", originalPVCName, "test-pvc", "test-pvc"),
 				Entry("source pvc with new suffix", "test-pvc-new", "", "test-pvc-mig-abcd"),
 				Entry("source pvc with xyzd suffix", "test-pvc-mig-xyzd", "", "test-pvc-mig-abcd"),
+				Entry("source pvc name exceeding max length", strings.Repeat("a", 60), "", strings.Repeat("a", 45)+"-92b9e111-mig-abcd"),
 			)
 
 			DescribeTable("should return an error if the target pvc is invalid", func(targetPVCDef func() *migrations.VirtualMachineStorageMigrationPlanDestinationPVC, expectType string, expectMessage string) {

@@ -22,12 +22,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openshift/library-go/pkg/build/naming"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	kvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 	virtv1 "kubevirt.io/api/core/v1"
 	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
@@ -65,10 +67,15 @@ func (t *Task) liveMigrateVM(ctx context.Context, planVM migrations.VirtualMachi
 	// Create the target DVs for the PVCs.
 	for i, pvc := range planVM.TargetMigrationPVCs {
 		// Determine the size of the source PVC.
-		if size, err := t.determineSourcePVCSize(ctx, &planVM.SourcePVCs[i].SourcePVC); err != nil {
+		// Requires a get call since objectmeta is pruned on the embedded corev1.PersistentVolumeClaim in the planVM
+		apiPVC := &corev1.PersistentVolumeClaim{}
+		if err := t.Client.Get(ctx, types.NamespacedName{Namespace: planVM.SourcePVCs[i].Namespace, Name: planVM.SourcePVCs[i].Name}, apiPVC); err != nil {
+			return err
+		}
+		if size, err := t.determineSourcePVCSize(ctx, apiPVC); err != nil {
 			return err
 		} else {
-			pvcObjectMeta := planVM.SourcePVCs[i].SourcePVC.ObjectMeta
+			pvcObjectMeta := apiPVC.ObjectMeta
 			if err := t.createTargetDV(ctx, pvc, size, pvcObjectMeta.Labels, pvcObjectMeta.Annotations); err != nil {
 				return err
 			}
@@ -100,7 +107,14 @@ func (t *Task) determineDataVolumeSize(ctx context.Context, sourcePVC *corev1.Pe
 	if dataVolume.Spec.PVC != nil {
 		return dataVolume.Spec.PVC.Resources.Requests[corev1.ResourceStorage], nil
 	} else if dataVolume.Spec.Storage != nil {
-		return dataVolume.Spec.Storage.Resources.Requests[corev1.ResourceStorage], nil
+		size := dataVolume.Spec.Storage.Resources.Requests[corev1.ResourceStorage]
+		if sourcePVC.Spec.VolumeMode != nil && *sourcePVC.Spec.VolumeMode == corev1.PersistentVolumeBlock {
+			// Aligning this with MTC behavior for feature parity
+			// But ultimately this will be investigated for libvirt issues
+			// https://github.com/migtools/mig-controller/blob/a3ff4c526d36af61e20bcf542ea95d97cb9bedcf/pkg/controller/directvolumemigration/pvcs.go#L110
+			size = sourcePVC.Status.Capacity[corev1.ResourceStorage]
+		}
+		return size, nil
 	}
 	// Cannot figure out the size from the DataVolume, get the size from the PVC.
 	return sourcePVC.Spec.Resources.Requests[corev1.ResourceStorage], nil
@@ -109,12 +123,7 @@ func (t *Task) determineDataVolumeSize(ctx context.Context, sourcePVC *corev1.Pe
 func (t *Task) createTargetDV(ctx context.Context, pvc migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC, size resource.Quantity, labels, annotations map[string]string) error {
 	targetPvc := pvc.DestinationPVC
 
-	// Remove any cdi related annotations from the PVC
-	for k := range annotations {
-		if strings.HasPrefix(k, "cdi.kubevirt.io") || strings.HasPrefix(k, "volume.kubernetes.io/selected-node") {
-			delete(annotations, k)
-		}
-	}
+	cleanTargetAnnotations(annotations)
 	dv := &cdiv1.DataVolume{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        *targetPvc.Name,
@@ -158,7 +167,8 @@ func (t *Task) createTargetDV(ctx context.Context, pvc migrations.VirtualMachine
 		dv.Labels = make(map[string]string)
 	}
 	dv.Labels[migrations.VirtualMachineStorageMigrationUIDLabel] = string(t.Owner.UID)
-	dv.Labels[migrations.VirtualMachineStorageMigrationPlanLabel] = t.Plan.Name
+	dv.Labels[migrations.VirtualMachineStorageMigrationPlanLabel] = naming.GetName(t.Plan.Name, "mig", kvalidation.DNS1035LabelMaxLength)
+	dv.Labels[migrations.VirtualMachineStorageMigrationPlanUIDLabel] = string(t.Plan.UID)
 	if err := t.Client.Create(ctx, dv); err != nil {
 		if k8serrors.IsAlreadyExists(err) {
 			return nil
@@ -275,9 +285,26 @@ func (t *Task) refreshCompletedVirtualMachines(ctx context.Context) (bool, error
 			return false, err
 		} else {
 			if endTime.After(startTime) {
+				log.V(5).Info("refresh completed", "endTime", endTime, "startTime", startTime)
 				return true, nil
+			} else {
+				log.V(5).Info("refresh not completed", "endTime", endTime, "startTime", startTime)
 			}
 		}
 	}
 	return false, nil
+}
+
+func cleanTargetAnnotations(annotations map[string]string) {
+	// Remove annotations indicating the PVC is bound or provisioned
+	delete(annotations, "pv.kubernetes.io/bind-completed")
+	delete(annotations, "volume.beta.kubernetes.io/storage-provisioner")
+	delete(annotations, "pv.kubernetes.io/bound-by-controller")
+	delete(annotations, "volume.kubernetes.io/storage-provisioner")
+	// Remove any cdi related annotations from the PVC
+	for k := range annotations {
+		if strings.HasPrefix(k, "cdi.kubevirt.io") || strings.HasPrefix(k, "volume.kubernetes.io/selected-node") {
+			delete(annotations, k)
+		}
+	}
 }

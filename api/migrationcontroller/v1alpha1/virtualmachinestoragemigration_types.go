@@ -23,9 +23,10 @@ import (
 )
 
 const (
-	VirtualMachineStorageMigrationUIDLabel  = "virtualmachinestoragemigration.kubevirt.io/virtualmachinestoragemigration-uid"
-	VirtualMachineStorageMigrationPlanLabel = "virtualmachinestoragemigration.kubevirt.io/virtualmachinestoragemigrationplan-name"
-	VirtualMachineStorageMigrationFinalizer = "virtualmachinestoragemigration.kubevirt.io/finalizer"
+	VirtualMachineStorageMigrationUIDLabel     = "virtualmachinestoragemigration.kubevirt.io/virtualmachinestoragemigration-uid"
+	VirtualMachineStorageMigrationPlanLabel    = "virtualmachinestoragemigration.kubevirt.io/virtualmachinestoragemigrationplan-name"
+	VirtualMachineStorageMigrationPlanUIDLabel = "virtualmachinestoragemigration.kubevirt.io/virtualmachinestoragemigrationplan-uid"
+	VirtualMachineStorageMigrationFinalizer    = "virtualmachinestoragemigration.kubevirt.io/finalizer"
 )
 
 // MigMigrationSpec defines the desired state of MigMigration
@@ -43,24 +44,35 @@ const (
 	LiveMigrationFailed                          Phase = "LiveMigrationFailed"
 	Canceling                                    Phase = "Canceling"
 	Canceled                                     Phase = "Canceled"
+	CleanupCancelledMigrations                   Phase = "CleanupCancelledMigrations"
 	Completed                                    Phase = "Completed"
 	CleanupMigrationResources                    Phase = "CleanupMigrationResources"
 )
 
-// Phase defines phase in the migration
+// Phase defines phase of the migration
 type Phase string
 
 // VirtualMachineStorageMigrationStatus defines the observed state of VirtualMachineStorageMigration
 type VirtualMachineStorageMigrationStatus struct {
-	Conditions          `json:",inline"`
-	Phase               Phase                            `json:"phase,omitempty"`
-	Errors              []string                         `json:"errors,omitempty"`
-	RunningMigrations   []RunningVirtualMachineMigration `json:"runningMigrations,omitempty"`
-	CompletedMigrations []string                         `json:"completedMigrations,omitempty"`
+	// The conditions of the migration.
+	Conditions `json:",inline"`
+	// The current phase of the migration.
+	Phase Phase `json:"phase,omitempty"`
+	// The errors occurred during the migration.
+	Errors []string `json:"errors,omitempty"`
+	// The running migrations.
+	RunningMigrations []RunningVirtualMachineMigration `json:"runningMigrations,omitempty"`
+	// The completed migrations.
+	CompletedMigrations []string `json:"completedMigrations,omitempty"`
+	// The cancelled migrations.
+	CancelledMigrations []string `json:"cancelledMigrations,omitempty"`
 }
 
+// RunningVirtualMachineMigration has the name of the VirtualMachine and the progress of the migration.
 type RunningVirtualMachineMigration struct {
-	Name     string `json:"name"`
+	// The name of the VirtualMachine.
+	Name string `json:"name"`
+	// The progress of the migration.
 	Progress string `json:"progress,omitempty"`
 }
 

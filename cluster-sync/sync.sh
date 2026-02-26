@@ -11,14 +11,14 @@ make undeploy || echo "this is fine"
 
 if [[ "$DOCKER_REPO" == "localhost" ]]; then
   port=$(./cluster-up/cli.sh ports registry | xargs)
-  DOCKER_REPO_IMAGE="${DOCKER_REPO}:${port}/${IMG}"
+  DOCKER_REMOTE_REPO="${DOCKER_REPO}:${port}"
   export BUILDAH_TLS_VERIFY=false
 else
-  DOCKER_REPO_IMAGE="${DOCKER_REPO}/${IMG}"
+  DOCKER_REMOTE_REPO="${DOCKER_REPO}"
 fi
 
 # push to local registry provided by kvci
-make buildah-manifest-clean DOCKER_REPO_IMAGE="${DOCKER_REPO_IMAGE}" && make buildah-manifest DOCKER_REPO_IMAGE="${DOCKER_REPO_IMAGE}" && make buildah-manifest-push DOCKER_REPO_IMAGE="${DOCKER_REPO_IMAGE}"
+make buildah-manifest-clean DOCKER_REPO="${DOCKER_REMOTE_REPO}" && make buildah-manifest DOCKER_REPO="${DOCKER_REMOTE_REPO}" && make buildah-manifest-push DOCKER_REPO="${DOCKER_REMOTE_REPO}"
 # the "cluster" (kvci VM) only understands the alias registry:5000 (which maps to localhost:${port})
 if [[ "$DOCKER_REPO" == "localhost" ]]; then
   MANIFEST_IMG="registry:5000/${IMG}"

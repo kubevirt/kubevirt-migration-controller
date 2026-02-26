@@ -68,7 +68,10 @@ func (t *Task) Run(ctx context.Context) error {
 	t.init()
 	log := t.Log
 
-	log.V(5).Info("Running task.Run", "phase", t.Owner.Status.Phase)
+	if t.Owner.DeletionTimestamp != nil && t.Owner.Status.Phase != migrations.Canceled && t.Owner.Status.Phase != migrations.Completed && t.Owner.Status.Phase != migrations.CleanupCancelledMigrations {
+		t.Log.V(4).Info("Cancelling migration", "migration", t.Owner.Name, "phase", t.Owner.Status.Phase)
+		t.Owner.Status.Phase = migrations.Canceling
+	}
 	// Run the current phase.
 	switch t.Owner.Status.Phase {
 	case migrations.Started:
@@ -87,56 +90,24 @@ func (t *Task) Run(ctx context.Context) error {
 		if completed, err := t.refreshCompletedVirtualMachines(ctx); err != nil {
 			return err
 		} else if !completed {
+			t.Requeue = PollReQ
 			return nil
 		}
 		t.Owner.Status.Phase = migrations.BeginLiveMigration
 	case migrations.BeginLiveMigration:
-		log.V(5).Info("Processing BeginLiveMigration phase", "readyMigrations", len(t.Plan.Status.ReadyMigrations))
-		log.V(5).Info("Processing BeginLiveMigration phase", "inProgressMigrations", len(t.Plan.Status.InProgressMigrations))
-		checkMigrations := make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, 0)
-		checkMigrations = append(checkMigrations, t.Plan.Status.ReadyMigrations...)
-		checkMigrations = append(checkMigrations, t.Plan.Status.InProgressMigrations...)
-		for _, vm := range checkMigrations {
-			if can, err := t.canVMStorageMigrate(ctx, vm.Name); err != nil {
-				return err
-			} else if !can {
-				t.Log.V(3).Info("VM cannot storage migrate", "vm", vm.Name)
-				continue
-			}
-			if err := t.liveMigrateVM(ctx, vm); err != nil {
-				return err
-			}
-			t.Log.V(3).Info("VM migration is running", "vm", vm.Name)
-			t.Owner.Status.RunningMigrations = append(t.Owner.Status.RunningMigrations, migrations.RunningVirtualMachineMigration{
-				Name: vm.Name,
-			})
+		log.V(5).Info("Processing BeginLiveMigration phase")
+		err := t.handleBeginLiveMigrationPhase(ctx)
+		if err != nil {
+			return err
 		}
-		t.Owner.Status.Phase = migrations.WaitForLiveMigrationToComplete
 	case migrations.WaitForLiveMigrationToComplete:
-		log.V(5).Info("Processing WaitForLiveMigrationToComplete phase", "runningMigrations", len(t.Owner.Status.RunningMigrations))
-		runningMigrations := make([]migrations.RunningVirtualMachineMigration, 0)
-		for _, vm := range t.Owner.Status.RunningMigrations {
-			if ok, err := t.isLiveMigrationCompleted(ctx, vm.Name); err != nil {
-				return err
-			} else if !ok {
-				runningMigrations = append(runningMigrations, vm)
-				progress, err := t.getLastObservedProgressPercent(ctx, vm.Name, t.Owner.Namespace)
-				if err != nil {
-					return err
-				}
-				if progress != "" {
-					vm.Progress = progress
-				}
-				continue
-			}
-			t.Owner.Status.CompletedMigrations = append(t.Owner.Status.CompletedMigrations, vm.Name)
+		log.V(5).Info("Processing WaitForLiveMigrationToComplete phase")
+		err := t.handleWaitForLiveMigrationToCompletePhase(ctx)
+		if err != nil {
+			return err
 		}
-		t.Owner.Status.RunningMigrations = runningMigrations
-		if len(runningMigrations) == 0 {
-			t.Owner.Status.Phase = migrations.CleanupMigrationResources
-		}
-		t.Requeue = PollReQ
 	case migrations.CleanupMigrationResources:
+		log.V(5).Info("Processing CleanupMigrationResources phase")
 		if allCleaned, err := t.cleanupMigrationResources(ctx, t.Owner.Status.CompletedMigrations); err != nil {
 			return err
 		} else if !allCleaned {
@@ -145,7 +116,24 @@ func (t *Task) Run(ctx context.Context) error {
 			t.Owner.RemoveFinalizer(migrations.VirtualMachineStorageMigrationFinalizer, t.Log)
 			t.Owner.Status.Phase = migrations.Completed
 		}
+	case migrations.Canceling:
+		log.V(5).Info("Processing Canceling phase")
+		err := t.handleCancelingPhase(ctx)
+		if err != nil {
+			return err
+		}
+	case migrations.CleanupCancelledMigrations:
+		log.V(5).Info("Processing CleanupCancelledMigrations phase")
+		if allCleaned, err := t.cleanupCancelledMigrationResources(ctx, t.Owner.Status.CancelledMigrations, t.Owner.Status.CompletedMigrations); err != nil {
+			return err
+		} else if !allCleaned {
+			t.Log.V(4).Info("some cancelled migration resources are not cleaned up, requeuing")
+			t.Requeue = PollReQ
+		} else {
+			t.Owner.Status.Phase = migrations.Canceled
+		}
 	case migrations.Canceled:
+		log.V(5).Info("Processing Canceled phase")
 		t.Owner.Status.DeleteCondition(string(migrations.Canceling))
 		t.Owner.Status.SetCondition(migrations.Condition{
 			Type:     string(migrations.Canceled),
@@ -161,6 +149,91 @@ func (t *Task) Run(ctx context.Context) error {
 	return nil
 }
 
+func (t *Task) handleBeginLiveMigrationPhase(ctx context.Context) error {
+	t.Log.V(5).Info("Processing BeginLiveMigration phase", "readyMigrations", len(t.Plan.Status.ReadyMigrations))
+	t.Log.V(5).Info("Processing BeginLiveMigration phase", "inProgressMigrations", len(t.Plan.Status.InProgressMigrations))
+	checkMigrations := make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, 0)
+	checkMigrations = append(checkMigrations, t.Plan.Status.ReadyMigrations...)
+	checkMigrations = append(checkMigrations, t.Plan.Status.InProgressMigrations...)
+	for _, vm := range checkMigrations {
+		if can, err := t.canVMStorageMigrate(ctx, vm.Name); err != nil {
+			return err
+		} else if !can {
+			t.Log.V(3).Info("VM cannot storage migrate", "vm", vm.Name)
+			continue
+		}
+		if err := t.liveMigrateVM(ctx, vm); err != nil {
+			return err
+		}
+		t.Log.V(3).Info("VM migration is running", "vm", vm.Name)
+		t.Owner.Status.RunningMigrations = append(t.Owner.Status.RunningMigrations, migrations.RunningVirtualMachineMigration{
+			Name: vm.Name,
+		})
+	}
+	t.Owner.Status.Phase = migrations.WaitForLiveMigrationToComplete
+	return nil
+}
+
+func (t *Task) handleWaitForLiveMigrationToCompletePhase(ctx context.Context) error {
+	runningMigrations := make([]migrations.RunningVirtualMachineMigration, 0)
+	for _, vm := range t.Owner.Status.RunningMigrations {
+		t.Log.V(5).Info("Checking if live migration is completed", "vm", vm.Name)
+		if ok, err := t.isLiveMigrationCompleted(ctx, vm.Name); err != nil {
+			return err
+		} else if !ok {
+			runningMigrations = append(runningMigrations, vm)
+			progress, err := t.getLastObservedProgressPercent(ctx, vm.Name, t.Owner.Namespace)
+			if err != nil {
+				return err
+			}
+			if progress != "" {
+				vm.Progress = progress
+			}
+			continue
+		}
+		t.Owner.Status.CompletedMigrations = append(t.Owner.Status.CompletedMigrations, vm.Name)
+	}
+	t.Owner.Status.RunningMigrations = runningMigrations
+	if len(runningMigrations) == 0 {
+		t.Owner.Status.Phase = migrations.CleanupMigrationResources
+	}
+	t.Requeue = PollReQ
+	return nil
+}
+
+func (t *Task) handleCancelingPhase(ctx context.Context) error {
+	runningMigrations := make([]migrations.RunningVirtualMachineMigration, 0)
+	cancelledMigrations := make([]string, 0)
+	for _, vm := range t.Owner.Status.RunningMigrations {
+		if ok, err := t.isLiveMigrationCompleted(ctx, vm.Name); err != nil {
+			return err
+		} else if !ok {
+			t.Log.V(4).Info("Live migration is not completed attempting to cancel", "vm", vm.Name)
+			if ok, err := t.isLiveMigrationCanceling(ctx, vm.Name); err != nil {
+				return err
+			} else if !ok {
+				t.Log.V(4).Info("Live migration is not cancelling attempting to cancel", "vm", vm.Name)
+				if err := t.cancelLiveMigration(ctx, vm.Name); err != nil {
+					return err
+				}
+				runningMigrations = append(runningMigrations, vm)
+				continue
+			} else if ok {
+				t.Log.V(4).Info("Live migration is already cancelling", "vm", vm.Name)
+				cancelledMigrations = append(cancelledMigrations, vm.Name)
+				continue
+			}
+		}
+	}
+	t.Owner.Status.RunningMigrations = runningMigrations
+	t.Owner.Status.CancelledMigrations = cancelledMigrations
+	if len(runningMigrations) == 0 {
+		t.Owner.Status.Phase = migrations.CleanupCancelledMigrations
+	}
+	t.Requeue = PollReQ
+	return nil
+}
+
 func (t *Task) isLiveMigrationCompleted(ctx context.Context, vmName string) (bool, error) {
 	// In order to determine if the live migration is complete, we need to check the VMIM status.
 	vmimList := &virtv1.VirtualMachineInstanceMigrationList{}
@@ -169,7 +242,7 @@ func (t *Task) isLiveMigrationCompleted(ctx context.Context, vmName string) (boo
 	}
 	var activeVMIM *virtv1.VirtualMachineInstanceMigration
 	for _, vmim := range vmimList.Items {
-		if vmim.Spec.VMIName == vmName && vmim.Status.Phase != virtv1.MigrationFailed {
+		if vmim.Spec.VMIName == vmName && vmim.Status.Phase != virtv1.MigrationFailed && !vmim.CreationTimestamp.Before(&t.Owner.CreationTimestamp) {
 			t.Log.V(5).Info("Found active VMIM", "vmim", vmim.Name)
 			activeVMIM = &vmim
 			break
@@ -205,15 +278,16 @@ func (t *Task) cleanupCompletedVMIMs(ctx context.Context) error {
 		completedMigrations[migration] = struct{}{}
 	}
 	for _, vmim := range vmimList.Items {
-		t.Log.Info("Checking if VMIM is completed", "vmim", vmim.Name, "phase", vmim.Status.Phase)
 		_, ok := completedMigrations[vmim.Spec.VMIName]
 		if vmim.Status.Phase == virtv1.MigrationSucceeded && ok {
-			t.Log.Info("Cleaning up migration resource", "vmim", vmim.Name)
+			t.Log.V(5).Info("Cleaning up migration resource", "vmim", vmim.Name)
 			if err := t.Client.Delete(ctx, &vmim); err != nil {
 				if !k8serrors.IsNotFound(err) {
 					return err
 				}
 			}
+		} else if vmim.Status.Phase == virtv1.MigrationFailed {
+			t.Log.V(2).Info("WARNING: Not cleaning up failed VMIM", "vmim", vmim.Name)
 		}
 	}
 	return nil
@@ -226,14 +300,16 @@ func (t *Task) cleanupCompletedPods(ctx context.Context, completedMigrationsVMNa
 		return false, err
 	}
 	for _, pod := range podList.Items {
-		t.Log.Info("Checking if pod is completed", "pod", pod.Name, "phase", pod.Status.Phase)
-		if pod.Status.Phase == corev1.PodSucceeded {
-			t.Log.Info("Cleaning up migration resource", "pod", pod.Name)
+		switch pod.Status.Phase {
+		case corev1.PodSucceeded:
+			t.Log.V(5).Info("Cleaning up migration resource", "pod", pod.Name)
 			if err := t.Client.Delete(ctx, &pod); err != nil {
 				if !k8serrors.IsNotFound(err) {
 					return false, err
 				}
 			}
+		case corev1.PodFailed:
+			t.Log.V(2).Info("WARNING: Not cleaning up failed pod", "pod", pod.Name)
 		}
 	}
 	for _, completedMigrationVMName := range completedMigrationsVMNames {
@@ -254,7 +330,7 @@ func (t *Task) cleanupCompletedPods(ctx context.Context, completedMigrationsVMNa
 
 // Initialize.
 func (t *Task) init() {
-	t.Log.V(4).Info("Running task init")
+	t.Log.V(5).Info("Running task init")
 	if t.Owner.Status.Phase == "" {
 		t.Owner.Status.Phase = migrations.Started
 	}
