@@ -17,12 +17,17 @@ namePrefix: kubevirt-migration-
 resources:
 - ../crd
 - ../rbac
-- ../manager
+- ../controller
 
 # Uncomment the patches line if you enable Metrics
 patches:
 # [METRICS] The following patch will enable the metrics endpoint using HTTPS and the port :8443.
 # More info: https://book.kubebuilder.io/reference/metrics
-- path: manager_metrics_patch.yaml
+- path: controller_metrics_patch.yaml
   target:
     kind: Deployment
+    name: controller
+- path: controller_prometheus_client_patch.yaml
+  target:
+    kind: Deployment
+    name: controller

@@ -162,7 +162,8 @@ func (r *StorageMigPlanReconciler) validateStorageMigrationPossible(ctx context.
 		// Remove the storage migration not possible condition for the virtual machine.
 		plan.Status.DeleteCondition(StorageMigrationNotPossibleType)
 	}
-	if len(plan.Status.ReadyMigrations)+len(plan.Status.InProgressMigrations)+len(plan.Status.CompletedMigrations)+len(plan.Status.FailedMigrations) != len(plan.Spec.VirtualMachines) {
+	if len(plan.Status.ReadyMigrations) > 0 &&
+		len(plan.Status.ReadyMigrations)+len(plan.Status.InProgressMigrations)+len(plan.Status.CompletedMigrations)+len(plan.Status.FailedMigrations) != len(plan.Spec.VirtualMachines) {
 		plan.Status.SetCondition(migrations.Condition{
 			Type:     NotAllVirtualMachinesReadyReason,
 			Status:   corev1.ConditionTrue,

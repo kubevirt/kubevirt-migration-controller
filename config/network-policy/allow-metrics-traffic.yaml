@@ -12,7 +12,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      control-plane: controller-manager
+      control-plane: controller
       app.kubernetes.io/name: kubevirt-migration-controller
   policyTypes:
     - Ingress
