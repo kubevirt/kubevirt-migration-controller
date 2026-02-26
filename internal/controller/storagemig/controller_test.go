@@ -22,6 +22,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -99,6 +100,48 @@ var _ = Describe("StorageMigration Controller", func() {
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Context("When reconciling a migration that is completed", func() {
+		It("Should allow setting the field for the first time, but not update/delete it", func() {
+			key := types.NamespacedName{Name: "test-resource", Namespace: "default"}
+			created := &migrations.VirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
+				Spec: migrations.VirtualMachineStorageMigrationPlanSpec{
+					RetentionPolicy: ptr.To(migrations.RetentionPolicyDeleteSource),
+					VirtualMachines: []migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+						{
+							Name: testutils.TestVMName,
+							TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+								{
+									VolumeName: testutils.TestVolumeName,
+								},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, created)).To(Succeed())
+			existing := &migrations.VirtualMachineStorageMigrationPlan{}
+			Expect(k8sClient.Get(ctx, key, existing)).To(Succeed())
+
+			// Attempt to change the value
+			existing.Spec.RetentionPolicy = ptr.To(migrations.RetentionPolicyKeepSource)
+			err := k8sClient.Update(ctx, existing)
+
+			Expect(err).To(HaveOccurred())
+			// Verify the specific CEL error message from your marker
+			Expect(err.Error()).To(ContainSubstring("retentionPolicy is immutable"))
+			existing = &migrations.VirtualMachineStorageMigrationPlan{}
+			Expect(k8sClient.Get(ctx, key, existing)).To(Succeed())
+
+			// Attempt to delete (set to nil)
+			existing.Spec.RetentionPolicy = nil
+			err = k8sClient.Update(ctx, existing)
+
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("retentionPolicy is immutable"))
 		})
 	})
 })

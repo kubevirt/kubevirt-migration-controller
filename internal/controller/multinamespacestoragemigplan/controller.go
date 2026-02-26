@@ -61,6 +61,7 @@ type MultiNamespaceStorageMigPlanReconciler struct {
 // +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=multinamespacevirtualmachinestoragemigrationplans,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=multinamespacevirtualmachinestoragemigrationplans/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=multinamespacevirtualmachinestoragemigrationplans/finalizers,verbs=update
+// +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=virtualmachinestoragemigrationplans,verbs=get;list;watch;create;update;patch
 func (r *MultiNamespaceStorageMigPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log
 	log.V(5).Info("Reconciling MultiNamespaceVirtualMachineStorageMigrationPlan", "name", req.NamespacedName)
@@ -77,7 +78,6 @@ func (r *MultiNamespaceStorageMigPlanReconciler) Reconcile(ctx context.Context, 
 
 	invalidNamespaceFound := false
 	for _, namespace := range plan.Spec.Namespaces {
-		log.Info("Processing namespace", "namespace", namespace.Name)
 		if message, err := r.validateNamespace(ctx, &namespace); err != nil {
 			return reconcile.Result{}, err
 		} else if message != "" {
@@ -88,19 +88,18 @@ func (r *MultiNamespaceStorageMigPlanReconciler) Reconcile(ctx context.Context, 
 			})
 			invalidNamespaceFound = true
 		}
-		log.Info("namespace plan spec", "namespace", namespace.Name, "plan spec", namespace.VirtualMachineStorageMigrationPlanSpec)
 		namespacedPlan, err := r.getNamespacePlan(ctx, plan.Name, &namespace)
 		if err != nil {
 			return reconcile.Result{}, err
 		}
 		if namespacedPlan == nil {
-			log.Info("Creating namespace plan", "namespace", namespace.Name)
+			log.V(5).Info("Creating namespace plan", "namespace", namespace.Name)
 			err = r.createNamespacePlan(ctx, plan, &namespace)
 			if err != nil {
 				return reconcile.Result{}, err
 			}
 		} else {
-			log.Info("Updating namespace plan status", "namespace", namespace.Name)
+			log.V(5).Info("Updating namespace plan status", "namespace", namespace.Name)
 			// Update the status of the multi-namespace storage migration plan
 			r.updateNamespacePlanStatus(plan, namespacedPlan)
 		}
@@ -187,6 +186,11 @@ func (r *MultiNamespaceStorageMigPlanReconciler) validateNamespace(ctx context.C
 }
 
 func (r *MultiNamespaceStorageMigPlanReconciler) createNamespacePlan(ctx context.Context, plan *migrations.MultiNamespaceVirtualMachineStorageMigrationPlan, namespace *migrations.VirtualMachineStorageMigrationPlanNamespaceSpec) error {
+	spec := namespace.VirtualMachineStorageMigrationPlanSpec.DeepCopy()
+	// When the multinamespace plan has RetentionPolicy set (e.g. deleteSource), apply it to the child plan
+	if plan.Spec.RetentionPolicy != nil {
+		spec.RetentionPolicy = plan.Spec.RetentionPolicy
+	}
 	namespacePlan := &migrations.VirtualMachineStorageMigrationPlan{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      migrations.GetNamespacedPlanName(plan.Name, namespace.Name),
@@ -199,7 +203,7 @@ func (r *MultiNamespaceStorageMigPlanReconciler) createNamespacePlan(ctx context
 				multiNamespaceStorageMigPlanNamespaceAnnotation: namespace.Name,
 			},
 		},
-		Spec: *namespace.VirtualMachineStorageMigrationPlanSpec.DeepCopy(),
+		Spec: *spec,
 	}
 
 	if err := r.Create(ctx, namespacePlan); err != nil {

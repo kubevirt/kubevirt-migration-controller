@@ -25,10 +25,28 @@ const (
 	VirtualMachineStorageMigrationPlanKind = "VirtualMachineStorageMigrationPlan"
 )
 
+// RetentionPolicy defines what to do with the source DataVolume/PVC after a migration completes.
+// +kubebuilder:validation:Enum=keepSource;deleteSource
+type RetentionPolicy string
+
+const (
+	// RetentionPolicyKeepSource keeps the source DataVolume/PVC after migration (default behavior).
+	RetentionPolicyKeepSource RetentionPolicy = "keepSource"
+	// RetentionPolicyDeleteSource deletes the source DataVolume (if it exists) or source PVC after migration completes.
+	RetentionPolicyDeleteSource RetentionPolicy = "deleteSource"
+)
+
 // VirtualMachineStorageMigrationPlanSpec defines the desired state of VirtualMachineStorageMigrationPlan
 type VirtualMachineStorageMigrationPlanSpec struct {
 	// The virtual machines to migrate.
 	VirtualMachines []VirtualMachineStorageMigrationPlanVirtualMachine `json:"virtualMachines"`
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:default=keepSource
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf", message="retentionPolicy is immutable"
+	// RetentionPolicy indicates whether to keep or delete the source DataVolume/PVC after each VM migration completes.
+	// When "keepSource" (default), the source is preserved. When "deleteSource", the source DataVolume is deleted
+	// if it exists, otherwise the source PVC is deleted.
+	RetentionPolicy *RetentionPolicy `json:"retentionPolicy,omitempty"`
 }
 
 // VirtualMachineStorageMigrationPlanVirtualMachine defines the VirtualMachine to migrate and the PVCs to migrate.
