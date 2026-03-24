@@ -47,6 +47,8 @@ const (
 	multiNamespaceStorageMigPlanNameAnnotation      = "migration.kubevirt.io/multi-namespace-storage-mig-plan-name"
 	multiNamespaceStorageMigPlanNamespaceAnnotation = "migration.kubevirt.io/multi-namespace-storage-mig-plan-namespace"
 
+	multiNamespaceStorageMigPlanFinalizer = "migrations.kubevirt.io/multinamespace-storage-mig-plan-finalizer"
+
 	InvalidNamespace = "InvalidNamespace"
 )
 
@@ -61,7 +63,7 @@ type MultiNamespaceStorageMigPlanReconciler struct {
 // +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=multinamespacevirtualmachinestoragemigrationplans,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=multinamespacevirtualmachinestoragemigrationplans/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=multinamespacevirtualmachinestoragemigrationplans/finalizers,verbs=update
-// +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=virtualmachinestoragemigrationplans,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=virtualmachinestoragemigrationplans,verbs=get;list;watch;create;update;patch;delete
 func (r *MultiNamespaceStorageMigPlanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log
 	log.V(5).Info("Reconciling MultiNamespaceVirtualMachineStorageMigrationPlan", "name", req.NamespacedName)
@@ -74,6 +76,24 @@ func (r *MultiNamespaceStorageMigPlanReconciler) Reconcile(ctx context.Context, 
 		}
 		return reconcile.Result{}, err
 	}
+
+	// If the plan is being deleted, run finalizer logic.
+	if plan.DeletionTimestamp != nil {
+		if err := r.runFinalizer(ctx, plan); err != nil {
+			return reconcile.Result{}, err
+		}
+		return reconcile.Result{}, nil
+	}
+
+	// Ensure finalizer is present so we can cascade-delete children when the plan is deleted.
+	if !slices.Contains(plan.Finalizers, multiNamespaceStorageMigPlanFinalizer) {
+		plan.Finalizers = append(plan.Finalizers, multiNamespaceStorageMigPlanFinalizer)
+		if err := r.Update(ctx, plan); err != nil {
+			return reconcile.Result{}, err
+		}
+		return reconcile.Result{}, nil
+	}
+
 	originalPlan := plan.DeepCopy()
 
 	invalidNamespaceFound := false
@@ -168,6 +188,36 @@ func (r *MultiNamespaceStorageMigPlanReconciler) getNamespacePlan(ctx context.Co
 	return plan, nil
 }
 
+// runFinalizer deletes all child VirtualMachineStorageMigrationPlan resources and then removes the finalizer.
+func (r *MultiNamespaceStorageMigPlanReconciler) runFinalizer(ctx context.Context, plan *migrations.MultiNamespaceVirtualMachineStorageMigrationPlan) error {
+	for _, namespace := range plan.Spec.Namespaces {
+		childPlan, err := r.getNamespacePlan(ctx, plan.Name, &namespace)
+		if err != nil {
+			return err
+		}
+		if childPlan == nil {
+			continue
+		}
+		if !r.isChildOwnedByPlan(childPlan, plan) {
+			continue
+		}
+		if err := r.Delete(ctx, childPlan, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !k8serrors.IsNotFound(err) {
+			return err
+		}
+	}
+	plan.Finalizers = slices.DeleteFunc(plan.Finalizers, func(s string) bool {
+		return s == multiNamespaceStorageMigPlanFinalizer
+	})
+	return r.Update(ctx, plan)
+}
+
+func (r *MultiNamespaceStorageMigPlanReconciler) isChildOwnedByPlan(child *migrations.VirtualMachineStorageMigrationPlan, plan *migrations.MultiNamespaceVirtualMachineStorageMigrationPlan) bool {
+	if uid, ok := child.Labels[multiNamespaceStorageMigPlanUIDLabel]; ok && uid == string(plan.UID) {
+		return true
+	}
+	return false
+}
+
 func (r *MultiNamespaceStorageMigPlanReconciler) validateNamespace(ctx context.Context, planNamespace *migrations.VirtualMachineStorageMigrationPlanNamespaceSpec) (string, error) {
 	if planNamespace.VirtualMachineStorageMigrationPlanSpec == nil {
 		return fmt.Sprintf("namespace %s has no plan", planNamespace.Name), nil
@@ -200,7 +250,7 @@ func (r *MultiNamespaceStorageMigPlanReconciler) createNamespacePlan(ctx context
 			},
 			Annotations: map[string]string{
 				multiNamespaceStorageMigPlanNameAnnotation:      plan.Name,
-				multiNamespaceStorageMigPlanNamespaceAnnotation: namespace.Name,
+				multiNamespaceStorageMigPlanNamespaceAnnotation: plan.Namespace,
 			},
 		},
 		Spec: *spec,
