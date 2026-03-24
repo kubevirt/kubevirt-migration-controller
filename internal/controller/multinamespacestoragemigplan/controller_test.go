@@ -25,6 +25,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	kvalidation "k8s.io/apimachinery/pkg/util/validation"
@@ -61,6 +62,38 @@ var _ = Describe("MultiNamespaceStorageMigPlan controller", func() {
 			}
 		})
 
+		Context("Cascade delete on multi-namespace plan deletion", func() {
+			It("should delete child VirtualMachineStorageMigrationPlan resources and remove finalizer when multi-namespace plan is deleted", func() {
+				planName := "test-cascade-delete-plan"
+				nn := types.NamespacedName{Name: planName, Namespace: testutils.TestNamespace}
+				multiPlan := createMultiNamespaceStorageMigrationPlan(planName)
+				Expect(reconciler.Client.Create(ctx, multiPlan)).To(Succeed())
+
+				By("Reconciling to add finalizer and create child plan")
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+				Expect(err).NotTo(HaveOccurred())
+
+				childPlanName := migrations.GetNamespacedPlanName(planName, testutils.TestNamespace)
+				childPlan := &migrations.VirtualMachineStorageMigrationPlan{}
+				Expect(reconciler.Client.Get(ctx, types.NamespacedName{Name: childPlanName, Namespace: testutils.TestNamespace}, childPlan)).To(Succeed())
+
+				Expect(reconciler.Client.Get(ctx, nn, multiPlan)).To(Succeed())
+				Expect(multiPlan.Finalizers).To(ContainElement(multiNamespaceStorageMigPlanFinalizer))
+
+				By("Deleting the multi-namespace plan (sets DeletionTimestamp)")
+				Expect(reconciler.Client.Delete(ctx, multiPlan)).To(Succeed())
+
+				By("Reconciling to run finalizer: delete children and remove finalizer")
+				_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying child plan was deleted")
+				childPlan = &migrations.VirtualMachineStorageMigrationPlan{}
+				err = reconciler.Client.Get(ctx, types.NamespacedName{Name: childPlanName, Namespace: testutils.TestNamespace}, childPlan)
+				Expect(k8serrors.IsNotFound(err)).To(BeTrue())
+			})
+		})
+
 		Context("Naming length constraints", func() {
 			It("should respect naming length constraints for namespaced plans", func() {
 				name := strings.Repeat("a", kvalidation.DNS1123SubdomainMaxLength)
@@ -83,6 +116,78 @@ var _ = Describe("MultiNamespaceStorageMigPlan controller", func() {
 
 				Expect(reconciler.Client.Get(ctx, nn, multinsPlan)).To(Succeed())
 				Expect(np.Labels).To(HaveKeyWithValue(multiNamespaceStorageMigPlanUIDLabel, BeEquivalentTo(multinsPlan.UID)))
+			})
+		})
+
+		Context("Cross-namespace parent lookup", func() {
+			It("should correctly find parent in different namespace via annotations", func() {
+				const crossNamespace = "cross-namespace-test"
+				planName := "cross-ns-plan"
+				parentNamespace := testutils.TestNamespace
+
+				By("Creating a second namespace for the child plan")
+				testutils.CreateMigPlanNamespace(ctx, reconciler.Client, crossNamespace)
+				defer testutils.DeleteMigPlanNamespace(ctx, reconciler.Client, crossNamespace)
+
+				By("Creating a multi-namespace plan in parent namespace")
+				multiPlan := &migrations.MultiNamespaceVirtualMachineStorageMigrationPlan{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      planName,
+						Namespace: parentNamespace,
+					},
+					Spec: migrations.MultiNamespaceVirtualMachineStorageMigrationPlanSpec{
+						Namespaces: []migrations.VirtualMachineStorageMigrationPlanNamespaceSpec{
+							{
+								Name: crossNamespace,
+								VirtualMachineStorageMigrationPlanSpec: &migrations.VirtualMachineStorageMigrationPlanSpec{
+									VirtualMachines: []migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+										{
+											Name: "test-vm",
+											TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+												{
+													VolumeName:     "dv-disk",
+													DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				}
+				Expect(reconciler.Client.Create(ctx, multiPlan)).To(Succeed())
+
+				By("Reconciling to add finalizer and create child plan in cross namespace")
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: planName, Namespace: parentNamespace},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying child plan exists in the cross namespace")
+				childPlanName := migrations.GetNamespacedPlanName(planName, crossNamespace)
+				childPlan := &migrations.VirtualMachineStorageMigrationPlan{}
+				Expect(reconciler.Client.Get(ctx, types.NamespacedName{
+					Name:      childPlanName,
+					Namespace: crossNamespace,
+				}, childPlan)).To(Succeed())
+
+				By("Verifying child plan has correct annotations pointing to parent namespace")
+				Expect(childPlan.Annotations).To(HaveKeyWithValue(multiNamespaceStorageMigPlanNameAnnotation, planName))
+				Expect(childPlan.Annotations).To(HaveKeyWithValue(multiNamespaceStorageMigPlanNamespaceAnnotation, parentNamespace),
+					"Child plan annotation should point to parent's namespace, not child's namespace")
+
+				By("Verifying child plan has correct UID label")
+				Expect(reconciler.Client.Get(ctx, types.NamespacedName{Name: planName, Namespace: parentNamespace}, multiPlan)).To(Succeed())
+				Expect(childPlan.Labels).To(HaveKeyWithValue(multiNamespaceStorageMigPlanUIDLabel, string(multiPlan.UID)))
+
+				By("Testing watch function correctly finds parent in different namespace")
+				requests := reconciler.getMultiNamespaceVirtualMachineStorageMigrationsPlanForStorageMigration(ctx, childPlan)
+				Expect(requests).To(HaveLen(1))
+				Expect(requests[0].NamespacedName).To(Equal(types.NamespacedName{
+					Name:      planName,
+					Namespace: parentNamespace,
+				}), "Watch function should return parent plan in parent namespace")
 			})
 		})
 	})
@@ -230,7 +335,7 @@ var _ = Describe("MultiNamespaceStorageMigPlan Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, multiPlan)).To(Succeed())
 
-			By("Reconciling the multinamespace plan")
+			By("Reconciling to add finalizer and create child plan")
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
@@ -606,7 +711,7 @@ var _ = Describe("MultiNamespaceStorageMigPlan Controller", func() {
 			Expect(after.ResourceVersion).To(Equal(rvBefore))
 		})
 
-		It("should reconcile completed plan marked for deletion", func() {
+		It("should still run finalizer when completed plan is marked for deletion", func() {
 			const settledPlanName = "deleting-multi-plan"
 			nn := types.NamespacedName{Name: settledPlanName, Namespace: testutils.TestNamespace}
 			multiPlan := newMultiNamespacePlanOptions(settledPlanName).
@@ -654,22 +759,15 @@ var _ = Describe("MultiNamespaceStorageMigPlan Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(completed).To(BeTrue())
 
-			multiPlan.Finalizers = []string{"test.finalizer"}
-			Expect(k8sClient.Update(ctx, multiPlan)).To(Succeed())
+			By("Deleting the completed plan still runs cascade-delete, not the completed skip")
 			Expect(k8sClient.Delete(ctx, multiPlan)).To(Succeed())
-
-			Expect(k8sClient.Get(ctx, nn, multiPlan)).To(Succeed())
-			Expect(multiPlan.DeletionTimestamp).NotTo(BeNil())
-			multiPlan.Status.Namespaces = nil
-			Expect(k8sClient.Status().Update(ctx, multiPlan)).To(Succeed())
-
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 			Expect(err).NotTo(HaveOccurred())
 
-			after := &migrations.MultiNamespaceVirtualMachineStorageMigrationPlan{}
-			Expect(k8sClient.Get(ctx, nn, after)).To(Succeed())
-			Expect(after.Status.Namespaces).To(HaveLen(1))
-			Expect(after.Status.Namespaces[0].Name).To(Equal(testutils.TestNamespace))
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: namespacePlanName, Namespace: testutils.TestNamespace}, namespacePlan)
+			Expect(k8serrors.IsNotFound(err)).To(BeTrue())
+			err = k8sClient.Get(ctx, nn, multiPlan)
+			Expect(k8serrors.IsNotFound(err)).To(BeTrue())
 		})
 	})
 })
