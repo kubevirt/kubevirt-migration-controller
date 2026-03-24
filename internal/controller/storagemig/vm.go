@@ -62,6 +62,10 @@ func (t *Task) offlineMigrateVM(ctx context.Context, planVM migrations.VirtualMa
 		return errors.New(message)
 	}
 
+	t.Log.V(3).Info("Updating VM for offline storage migration", "vm", vm.Name)
+	if err := t.updateVMForOfflineStorageMigration(ctx, vm, planVM); err != nil {
+		return err
+	}
 	for i, pvc := range planVM.TargetMigrationPVCs {
 		apiPVC := &corev1.PersistentVolumeClaim{}
 		if err := t.Client.Get(ctx, types.NamespacedName{Namespace: planVM.SourcePVCs[i].Namespace, Name: planVM.SourcePVCs[i].Name}, apiPVC); err != nil {
@@ -75,11 +79,6 @@ func (t *Task) offlineMigrateVM(ctx context.Context, planVM migrations.VirtualMa
 		if err := t.createTargetDV(ctx, pvc, size, pvcObjectMeta.Labels, pvcObjectMeta.Annotations, ptr.To(planVM.SourcePVCs[i].Name)); err != nil {
 			return err
 		}
-	}
-
-	t.Log.V(3).Info("Updating VM for offline storage migration", "vm", vm.Name)
-	if err := t.updateVMForOfflineStorageMigration(ctx, vm, planVM); err != nil {
-		return err
 	}
 	return nil
 }
@@ -364,7 +363,7 @@ func (t *Task) refreshCompletedVirtualMachines(ctx context.Context) (bool, error
 	return false, nil
 }
 
-// isOfflineMigrationCompleted returns true when all target DataVolumes for the VM have phase Succeeded.
+// isOfflineMigrationCompleted returns true when all target DataVolumes for the VM have phase Succeeded or WaitForFirstConsumer.
 func (t *Task) isOfflineMigrationCompleted(ctx context.Context, vmName string) (bool, error) {
 	planVM := t.getPlanVMByName(vmName)
 	if planVM == nil {
@@ -378,7 +377,7 @@ func (t *Task) isOfflineMigrationCompleted(ctx context.Context, vmName string) (
 			}
 			return false, err
 		}
-		if dv.Status.Phase != cdiv1.Succeeded {
+		if dv.Status.Phase != cdiv1.Succeeded && dv.Status.Phase != cdiv1.WaitForFirstConsumer {
 			return false, nil
 		}
 	}
