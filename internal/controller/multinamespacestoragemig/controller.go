@@ -51,6 +51,8 @@ const (
 
 	multiNamespaceStorageMigrationNameAnnotation      = "migration.kubevirt.io/multi-namespace-storage-mig-name"
 	multiNamespaceStorageMigrationNamespaceAnnotation = "migration.kubevirt.io/multi-namespace-storage-mig-namespace"
+
+	multiNamespaceStorageMigrationFinalizer = "migrations.kubevirt.io/multinamespace-storage-migration-finalizer"
 )
 
 // MigMigrationReconciler reconciles a MigMigration object
@@ -65,17 +67,35 @@ type MultiNamespaceStorageMigrationReconciler struct {
 // +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=multinamespacevirtualmachinestoragemigrations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=multinamespacevirtualmachinestoragemigrations/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=multinamespacevirtualmachinestoragemigrations/finalizers,verbs=update
+// +kubebuilder:rbac:groups=migrations.kubevirt.io,resources=virtualmachinestoragemigrations,verbs=get;list;watch;create;update;patch;delete
 func (r *MultiNamespaceStorageMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := r.Log
 	log.V(5).Info("Reconciling MultiNamespaceVirtualMachineStorageMigration", "name", req.NamespacedName.Name)
 	// Fetch the MultiNamespaceVirtualMachineStorageMigration instance
 	migration := &migrations.MultiNamespaceVirtualMachineStorageMigration{}
 
-	if err := r.Get(context.TODO(), req.NamespacedName, migration); err != nil {
+	if err := r.Get(ctx, req.NamespacedName, migration); err != nil {
 		if errors.IsNotFound(err) {
 			return reconcile.Result{}, nil
 		}
 		return reconcile.Result{}, err
+	}
+
+	// If the migration is being deleted, run finalizer logic.
+	if migration.DeletionTimestamp != nil {
+		if err := r.runFinalizer(ctx, migration); err != nil {
+			return reconcile.Result{}, err
+		}
+		return reconcile.Result{}, nil
+	}
+
+	// Ensure finalizer is present so we can cascade-delete children when the migration is deleted.
+	if !slices.Contains(migration.Finalizers, multiNamespaceStorageMigrationFinalizer) {
+		migration.Finalizers = append(migration.Finalizers, multiNamespaceStorageMigrationFinalizer)
+		if err := r.Update(ctx, migration); err != nil {
+			return reconcile.Result{}, err
+		}
+		return reconcile.Result{}, nil
 	}
 
 	origMigration := migration.DeepCopy()
@@ -105,7 +125,7 @@ func (r *MultiNamespaceStorageMigrationReconciler) Reconcile(ctx context.Context
 	}
 
 	// Migrate
-	if !migration.Status.HasBlockerCondition() {
+	if plan != nil && !migration.Status.HasBlockerCondition() {
 		log.V(5).Info("Starting MultiNamespaceVirtualMachineStorageMigration")
 		migration.Status.Namespaces = make([]migrations.MultiNamespaceVirtualMachineStorageMigrationNamespaceStatus, 0)
 		for _, namespacePlan := range plan.Spec.Namespaces {
@@ -131,7 +151,7 @@ func (r *MultiNamespaceStorageMigrationReconciler) Reconcile(ctx context.Context
 	// Apply changes to the status.
 	if !apiequality.Semantic.DeepEqual(migration.Status, origMigration.Status) {
 		log.V(5).Info("Updating VirtualMachineStorageMigration status")
-		if err := r.Status().Update(context.TODO(), migration); err != nil {
+		if err := r.Status().Update(ctx, migration); err != nil {
 			return reconcile.Result{}, err
 		}
 	}
@@ -156,6 +176,46 @@ func (r *MultiNamespaceStorageMigrationReconciler) getVirtualMachineStorageMigra
 		return nil, err
 	}
 	return virtualMachineStorageMigration, nil
+}
+
+// runFinalizer deletes all child VirtualMachineStorageMigration resources and then removes the finalizer.
+func (r *MultiNamespaceStorageMigrationReconciler) runFinalizer(ctx context.Context, migration *migrations.MultiNamespaceVirtualMachineStorageMigration) error {
+	if migration.Spec.MultiNamespaceVirtualMachineStorageMigrationPlanRef != nil {
+		migration.Spec.MultiNamespaceVirtualMachineStorageMigrationPlanRef.Namespace = migration.Namespace
+	}
+	plan, err := componenthelpers.GetMultiNamespaceStorageMigrationPlan(ctx, r.Client, migration.Spec.MultiNamespaceVirtualMachineStorageMigrationPlanRef)
+	if err != nil {
+		return err
+	}
+	if plan != nil {
+		for i := range plan.Spec.Namespaces {
+			namespacePlan := &plan.Spec.Namespaces[i]
+			childMigration, err := r.getVirtualMachineStorageMigration(ctx, plan, namespacePlan)
+			if err != nil {
+				return err
+			}
+			if childMigration == nil {
+				continue
+			}
+			if !r.isChildOwnedByMigration(childMigration, migration) {
+				continue
+			}
+			if err := r.Delete(ctx, childMigration, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !k8serrors.IsNotFound(err) {
+				return err
+			}
+		}
+	}
+	migration.Finalizers = slices.DeleteFunc(migration.Finalizers, func(s string) bool {
+		return s == multiNamespaceStorageMigrationFinalizer
+	})
+	return r.Update(ctx, migration)
+}
+
+func (r *MultiNamespaceStorageMigrationReconciler) isChildOwnedByMigration(child *migrations.VirtualMachineStorageMigration, migration *migrations.MultiNamespaceVirtualMachineStorageMigration) bool {
+	if uid, ok := child.Labels[multiNamespaceStorageMigrationUIDLabel]; ok && uid == string(migration.UID) {
+		return true
+	}
+	return false
 }
 
 func (r *MultiNamespaceStorageMigrationReconciler) createNamespacedMigration(ctx context.Context, planName string, migration *migrations.MultiNamespaceVirtualMachineStorageMigration, namespacePlan *migrations.VirtualMachineStorageMigrationPlanNamespaceSpec) error {
