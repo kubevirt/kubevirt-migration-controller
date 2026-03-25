@@ -308,13 +308,12 @@ spec:
                                   description: CustomBlockSize represents the desired
                                     logical and physical block size for a VM disk.
                                   properties:
+                                    discardGranularity:
+                                      type: integer
                                     logical:
                                       type: integer
                                     physical:
                                       type: integer
-                                  required:
-                                  - logical
-                                  - physical
                                   type: object
                                 matchVolume:
                                   description: Represents if a feature is enabled
@@ -337,7 +336,11 @@ spec:
                             cache:
                               description: |-
                                 Cache specifies which kvm disk cache mode should be used.
-                                Supported values are: CacheNone, CacheWriteThrough.
+                                Supported values are:
+                                none: Guest I/O not cached on the host, but may be kept in a disk cache.
+                                writethrough: Guest I/O cached on the host but written through to the physical medium. Slowest but with most guarantees.
+                                writeback: Guest I/O cached on the host.
+                                Defaults to none if the storage supports O_DIRECT, otherwise writethrough.
                               type: string
                             cdrom:
                               description: Attach a volume as a cdrom to the vmi.
@@ -359,6 +362,11 @@ spec:
                                     Defaults to closed.
                                   type: string
                               type: object
+                            changedBlockTracking:
+                              description: |-
+                                ChangedBlockTracking indicates this disk should have CBT option
+                                Defaults to false.
+                              type: boolean
                             dedicatedIOThread:
                               description: |-
                                 dedicatedIOThread indicates this disk should have an exclusive IO Thread.
@@ -457,11 +465,23 @@ spec:
                         description: Whether to attach a GPU device to the vmi.
                         items:
                           properties:
+                            claimName:
+                              description: |-
+                                ClaimName needs to be provided from the list vmi.spec.resourceClaims[].name where this
+                                device is allocated
+                              type: string
                             deviceName:
+                              description: DeviceName is the name of the device provisioned
+                                by device-plugins
                               type: string
                             name:
                               description: Name of the GPU device as exposed by a
                                 device plugin
+                              type: string
+                            requestName:
+                              description: |-
+                                RequestName needs to be provided from resourceClaim.spec.devices.requests[].name where this
+                                device is requested
                               type: string
                             tag:
                               description: If specified, the virtual network interface
@@ -491,7 +511,6 @@ spec:
                                   type: object
                               type: object
                           required:
-                          - deviceName
                           - name
                           type: object
                         type: array
@@ -500,11 +519,21 @@ spec:
                         description: Whether to attach a host device to the vmi.
                         items:
                           properties:
+                            claimName:
+                              description: |-
+                                ClaimName needs to be provided from the list vmi.spec.resourceClaims[].name where this
+                                device is allocated
+                              type: string
                             deviceName:
-                              description: DeviceName is the resource name of the
-                                host device exposed by a device plugin
+                              description: DeviceName is the name of the device provisioned
+                                by device-plugins
                               type: string
                             name:
+                              type: string
+                            requestName:
+                              description: |-
+                                RequestName needs to be provided from resourceClaim.spec.devices.requests[].name where this
+                                device is requested
                               type: string
                             tag:
                               description: If specified, the virtual network interface
@@ -512,7 +541,6 @@ spec:
                                 via config drive
                               type: string
                           required:
-                          - deviceName
                           - name
                           type: object
                         type: array
@@ -724,6 +752,19 @@ spec:
                           depends on additional factors of the VirtualMachineInstance,
                           like the number of guest CPUs.
                         type: boolean
+                      panicDevices:
+                        description: PanicDevices provides additional crash information
+                          when a guest crashes.
+                        items:
+                          properties:
+                            model:
+                              description: |-
+                                Model specifies what type of panic device is provided.
+                                The panic model used when this attribute is missing depends on the hypervisor and guest arch.
+                                One of: isa, hyperv, pvpanic.
+                              type: string
+                          type: object
+                        type: array
                       rng:
                         description: Whether to have random number generator from
                           host
@@ -748,7 +789,7 @@ spec:
                         properties:
                           enabled:
                             description: |-
-                              Enabled allows a user to explictly disable the vTPM even when one is enabled by a preference referenced by the VirtualMachine
+                              Enabled allows a user to explicitly disable the vTPM even when one is enabled by a preference referenced by the VirtualMachine
                               Defaults to True
                             type: boolean
                           persistent:
@@ -763,6 +804,16 @@ spec:
                           This is helpful for old machines like CentOS6 or RHEL6 which
                           do not understand virtio_non_transitional (virtio 1.0).
                         type: boolean
+                      video:
+                        description: Video describes the video device configuration
+                          for the vmi.
+                        properties:
+                          type:
+                            description: |-
+                              Type specifies the video device type (e.g., virtio, vga, bochs, ramfb).
+                              If not specified, the default is architecture-dependent (VGA for BIOS-based VMs, Bochs for EFI-based VMs on AMD64; virtio for Arm and s390x).
+                            type: string
+                        type: object
                       watchdog:
                         description: Watchdog describes a watchdog device which can
                           be added to the vmi.
@@ -1046,6 +1097,11 @@ spec:
                       acpi:
                         description: Information that can be set in the ACPI table
                         properties:
+                          msdmNameRef:
+                            description: |-
+                              Similar to SlicNameRef, another ACPI entry that is used in more recent Windows versions.
+                              The above points to the spec of MSDM too.
+                            type: string
                           slicNameRef:
                             description: |-
                               SlicNameRef should match the volume name of a secret object. The data in the secret should
@@ -1172,6 +1228,12 @@ spec:
                           session:
                             description: Base64 encoded session blob.
                             type: string
+                        type: object
+                      snp:
+                        description: AMD SEV-SNP flags defined by the SEV-SNP specifications.
+                        type: object
+                      tdx:
+                        description: Intel Trust Domain Extensions (TDX).
                         type: object
                     type: object
                   machine:

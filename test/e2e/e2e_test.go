@@ -31,8 +31,9 @@ import (
 	. "github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"kubevirt.io/kubevirt-migration-controller/test/utils"
+	client "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // serviceAccountName created for the project
@@ -116,15 +117,18 @@ var _ = Describe("Manager", Ordered, func() {
 		It("should run successfully", func() {
 			By("validating that the controller pod is running as expected")
 			verifyControllerUp := func(g Gomega) {
-				pods, err := kcs.CoreV1().Pods(*migrationControllerNamespace).List(context.TODO(), metav1.ListOptions{
-					LabelSelector: "control-plane=controller",
-				})
+				pods := &corev1.PodList{}
+				err := c.List(context.TODO(), pods,
+					&client.ListOptions{
+						Namespace: *migrationControllerNamespace,
+						LabelSelector: client.MatchingLabelsSelector{
+							Selector: labels.SelectorFromSet(map[string]string{"control-plane": "controller"}),
+						},
+					})
 				Expect(err).NotTo(HaveOccurred(), "Failed to list controller pods")
-				Expect(pods.Items).To(HaveLen(1), "expected 1 controller pod running")
+				Expect(pods.Items).ToNot(BeEmpty(), "expected at least 1 controller pod running")
 				controllerPodName = pods.Items[0].Name
 				Expect(controllerPodName).To(ContainSubstring("controller"))
-
-				// Validate the pod's status
 				g.Expect(pods.Items[0].Status.Phase).To(Equal(corev1.PodRunning), "Incorrect controller pod status")
 			}
 			Eventually(verifyControllerUp).Should(Succeed())

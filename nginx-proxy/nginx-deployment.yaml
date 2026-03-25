@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-registry-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: registry-proxy
+  template:
+    metadata:
+      labels:
+        app: registry-proxy
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:latest
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf # Mounts only the file, not the whole directory
+        - name: cache-storage
+          mountPath: /var/cache/nginx/registry
+        - name: certs
+          mountPath: /etc/nginx/certs
+          readOnly: true
+      volumes:
+      - name: config-volume
+        configMap:
+          name: nginx-registry-proxy-config
+      - name: certs
+        secret:
+          secretName: registry-proxy-tls
+      - name: cache-storage
+        emptyDir: {} # Use a PersistentVolumeClaim for production persistence
