@@ -20,7 +20,28 @@ KV_RELEASE=${KV_RELEASE:-v1.6.1} make cluster-up
 
 make cluster-sync
 
+# Function to handle cleanup
+cleanup() {
+  $kubectl delete -f nginx-proxy/nginx-ca.yaml
+  $kubectl delete -f nginx-proxy/nginx-cm.yaml
+  $kubectl delete -f nginx-proxy/nginx-secret.yaml
+  $kubectl delete -f nginx-proxy/nginx-svc.yaml
+  $kubectl delete -f nginx-proxy/nginx-deployment.yaml
+}
+
+
+# deploy nginx registry proxy in the default namespace
+# so we can access the same container over and over
+# using the proxy
 kubectl=${PWD}/cluster-up/kubectl.sh
+$kubectl apply -f nginx-proxy/nginx-ca.yaml
+$kubectl apply -f nginx-proxy/nginx-cm.yaml
+$kubectl apply -f nginx-proxy/nginx-secret.yaml
+$kubectl apply -f nginx-proxy/nginx-svc.yaml
+$kubectl apply -f nginx-proxy/nginx-deployment.yaml
+
+trap 'cleanup' EXIT
+
 
 $kubectl get pods -n kubevirt
 
