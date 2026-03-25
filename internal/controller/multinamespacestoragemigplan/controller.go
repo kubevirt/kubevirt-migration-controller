@@ -250,7 +250,9 @@ func (r *MultiNamespaceStorageMigPlanReconciler) getMultiNamespaceVirtualMachine
 	}
 	multiNamespaceStorageMigPlan := &migrations.MultiNamespaceVirtualMachineStorageMigrationPlan{}
 	if err := r.Get(ctx, types.NamespacedName{Name: nameLabel, Namespace: namespaceLabel}, multiNamespaceStorageMigPlan); err != nil {
-		r.Log.Error(err, "failed to get MultiNamespaceVirtualMachineStorageMigrationPlan for VirtualMachineStorageMigrationPlan", "multi-namespace-storage-mig-plan-name", nameLabel, "multi-namespace-storage-mig-plan-namespace", namespaceLabel)
+		if !k8serrors.IsNotFound(err) {
+			r.Log.Error(err, "failed to get MultiNamespaceVirtualMachineStorageMigrationPlan for VirtualMachineStorageMigrationPlan", "multi-namespace-storage-mig-plan-name", nameLabel, "multi-namespace-storage-mig-plan-namespace", namespaceLabel)
+		}
 		return nil
 	}
 	return []reconcile.Request{
