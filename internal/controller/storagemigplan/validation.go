@@ -49,8 +49,15 @@ const (
 	NotAllVirtualMachinesReadyMessage            = "Some virtual machines are not ready for storage migration"
 	NoVirtualMachinesReadyMessage                = "No virtual machines are ready for storage migration"
 
-	StorageMigrationNotPossibleType = "StorageMigrationNotPossible"
-	InvalidPVCsType                 = "InvalidPVCs"
+	StorageMigrationNotPossibleType              = "StorageMigrationNotPossible"
+	InvalidPVCsType                              = "InvalidPVCs"
+	FilesystemPVCsWithoutKubeVirtContentTypeType = "FilesystemPVCsWithoutKubeVirtContentType"
+)
+
+// Annotation keys and values for PVC content type (CDI/KubeVirt)
+const (
+	StorageContentTypeAnnotation = "cdi.kubevirt.io/storage.contentType"
+	StorageContentTypeKubeVirt   = "kubevirt"
 )
 
 // Messages
@@ -157,6 +164,31 @@ func (r *StorageMigPlanReconciler) validateStorageMigrationPossible(ctx context.
 		return nil
 	} else {
 		plan.Status.DeleteCondition(InvalidPVCsType)
+	}
+	offendingPVCs, err := r.getFilesystemPVCsWithoutKubeVirtContentType(ctx,
+		plan.Status.ReadyMigrations,
+		plan.Status.InProgressMigrations,
+		plan.Status.CompletedMigrations,
+	)
+	if err != nil {
+		return fmt.Errorf("looking up PVCs for content-type validation: %w", err)
+	}
+	if len(offendingPVCs) > 0 {
+		msg := "One or more PVCs have filesystem volume mode but do not have the annotation cdi.kubevirt.io/storage.contentType: kubevirt"
+		if len(offendingPVCs) <= 5 {
+			msg = fmt.Sprintf("%s: %s", msg, strings.Join(offendingPVCs, ", "))
+		} else {
+			msg = fmt.Sprintf("%s (%d PVCs, e.g. %s)", msg, len(offendingPVCs), strings.Join(offendingPVCs[:5], ", "))
+		}
+		plan.Status.SetCondition(migrations.Condition{
+			Type:     FilesystemPVCsWithoutKubeVirtContentTypeType,
+			Status:   corev1.ConditionTrue,
+			Reason:   migrations.Advisory,
+			Category: migrations.Warn,
+			Message:  msg,
+		})
+	} else {
+		plan.Status.DeleteCondition(FilesystemPVCsWithoutKubeVirtContentTypeType)
 	}
 	if len(plan.Status.ReadyMigrations) > 0 {
 		// Remove the storage migration not possible condition for the virtual machine.
@@ -308,6 +340,60 @@ func trimSuffix(pvcName string) string {
 		suffix = "-mig-" + suffixFixCols[2]
 	}
 	return strings.TrimSuffix(pvcName, suffix)
+}
+
+type pvcKey struct {
+	namespace string
+	name      string
+}
+
+func getPVCsFromVMs(vms ...[]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine) map[pvcKey]struct{} {
+	pvcSet := make(map[pvcKey]struct{})
+	for _, list := range vms {
+		for _, vm := range list {
+			for _, spvc := range vm.SourcePVCs {
+				ns, name := spvc.Namespace, spvc.Name
+				if name == "" {
+					name = spvc.SourcePVC.Name
+				}
+				if ns == "" {
+					ns = spvc.SourcePVC.Namespace
+				}
+				if name == "" || ns == "" {
+					continue
+				}
+				pvcSet[pvcKey{namespace: ns, name: name}] = struct{}{}
+			}
+		}
+	}
+	return pvcSet
+}
+
+// getFilesystemPVCsWithoutKubeVirtContentType returns namespace/name of PVCs that have
+// filesystem volume mode but do not have the cdi.kubevirt.io/storage.contentType: kubevirt
+// annotation. It looks up each PVC from the API to read annotations and volume mode, since
+// the migration plan status may not contain them.
+func (r *StorageMigPlanReconciler) getFilesystemPVCsWithoutKubeVirtContentType(ctx context.Context, vms ...[]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine) ([]string, error) {
+	pvcSet := getPVCsFromVMs(vms...)
+	var offending []string
+	for k := range pvcSet {
+		pvc := &corev1.PersistentVolumeClaim{}
+		if err := r.Client.Get(ctx, types.NamespacedName{Namespace: k.namespace, Name: k.name}, pvc); err != nil {
+			if k8serrors.IsNotFound(err) {
+				continue
+			}
+			return nil, err
+		}
+		isFilesystem := pvc.Spec.VolumeMode == nil || *pvc.Spec.VolumeMode == corev1.PersistentVolumeFilesystem
+		if !isFilesystem {
+			continue
+		}
+		hasAnnotation := pvc.Annotations != nil && pvc.Annotations[StorageContentTypeAnnotation] == StorageContentTypeKubeVirt
+		if !hasAnnotation {
+			offending = append(offending, k.namespace+"/"+k.name)
+		}
+	}
+	return offending, nil
 }
 
 func (r *StorageMigPlanReconciler) validatePVCs(ctx context.Context, plan *migrations.VirtualMachineStorageMigrationPlan) (string, string, error) {
