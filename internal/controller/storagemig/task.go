@@ -27,8 +27,6 @@ import (
 	"k8s.io/client-go/rest"
 	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
 
-	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
-	"github.com/prometheus/common/model"
 	virtv1 "kubevirt.io/api/core/v1"
 	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
@@ -37,7 +35,7 @@ import (
 // Requeue
 const (
 	FastReQ = time.Millisecond * 100
-	PollReQ = time.Second * 3
+	PollReQ = time.Second * 20
 	NoReQ   = time.Duration(0)
 
 	virtLauncherPodLabelSelectorKey   = "kubevirt.io"
@@ -45,16 +43,14 @@ const (
 )
 
 type Task struct {
-	Config        *rest.Config
-	Scheme        *runtime.Scheme
-	Log           logr.Logger
-	Client        k8sclient.Client
-	Owner         *migrations.VirtualMachineStorageMigration
-	Plan          *migrations.VirtualMachineStorageMigrationPlan
-	Requeue       time.Duration
-	Errors        []string
-	PrometheusAPI prometheusv1.API
-	PromQuery     func(ctx context.Context, query string, ts time.Time, opts ...prometheusv1.Option) (model.Value, prometheusv1.Warnings, error)
+	Config  *rest.Config
+	Scheme  *runtime.Scheme
+	Log     logr.Logger
+	Client  k8sclient.Client
+	Owner   *migrations.VirtualMachineStorageMigration
+	Plan    *migrations.VirtualMachineStorageMigrationPlan
+	Requeue time.Duration
+	Errors  []string
 }
 
 // Run the task.
