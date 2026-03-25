@@ -139,7 +139,7 @@ test: manifests generate fmt vet setup-envtest ginkgo ## Run tests.
 .PHONY: test-e2e
 test-e2e: manifests generate fmt vet gotestsum ## Run the e2e tests
 	@echo "Running e2e tests gotestsum $(GOTESTSUM)" saving results to $(ARTIFACTS)/junit.functest.xml
-	$(GOTESTSUM) --junitfile $(ARTIFACTS)/junit.functest.xml -- ./test/e2e/ -v -ginkgo.v --migration-controller-namespace=$(MIGRATION_CONTROLLER_NAMESPACE) --kubectl-path=$(KUBECTL_PATH) --test-kubeconfig=$(KUBECONFIG) --kubeurl=$(KUBEURL)
+	$(GOTESTSUM) --junitfile $(ARTIFACTS)/junit.functest.xml -- ./test/e2e/ -v -ginkgo.v --migration-controller-namespace=$(MIGRATION_CONTROLLER_NAMESPACE) --kubectl-path=$(KUBECTL_PATH) --test-kubeconfig=$(KUBECONFIG) --kubeurl=$(KUBEURL) --kubeconfig=$(KUBECONFIG)
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
