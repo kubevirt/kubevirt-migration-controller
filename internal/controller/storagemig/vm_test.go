@@ -17,7 +17,9 @@ package storagemig
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -31,6 +33,7 @@ import (
 	virtv1 "kubevirt.io/api/core/v1"
 	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -42,6 +45,28 @@ const (
 	testTargetDV     = "test-target-dv"
 	testNamespace    = "test-namespace"
 )
+
+// OperationTracker is a client wrapper that records the order of operations.
+// This is useful for testing that operations happen in the correct sequence.
+type OperationTracker struct {
+	client.Client
+	Operations []string
+	mu         sync.Mutex
+}
+
+func (t *OperationTracker) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+	t.mu.Lock()
+	t.Operations = append(t.Operations, fmt.Sprintf("Patch:%T:%s", obj, obj.GetName()))
+	t.mu.Unlock()
+	return t.Client.Patch(ctx, obj, patch, opts...)
+}
+
+func (t *OperationTracker) Create(ctx context.Context, obj client.Object, opts ...client.CreateOption) error {
+	t.mu.Lock()
+	t.Operations = append(t.Operations, fmt.Sprintf("Create:%T:%s", obj, obj.GetName()))
+	t.mu.Unlock()
+	return t.Client.Create(ctx, obj, opts...)
+}
 
 var _ = Describe("StorageMigration VM", func() {
 	var (
@@ -146,6 +171,191 @@ var _ = Describe("StorageMigration VM", func() {
 			},
 		}),
 	)
+
+	It("should update the VM for offline storage migration without setting UpdateVolumesStrategy", func() {
+		vm := createVirtualMachineWithDVTemplate(&cdiv1.DataVolumeSpec{
+			Storage: &cdiv1.StorageSpec{
+				StorageClassName: ptr.To(testStorageClass),
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("1Gi"),
+					},
+				},
+			},
+		})
+		Expect(k8sClient.Create(ctx, vm)).To(Succeed())
+		t := &Task{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+		planVM := migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+			SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+				{
+					VolumeName: testVolume,
+					Name:       testSourceDV,
+					Namespace:  testNamespace,
+					SourcePVC:  corev1.PersistentVolumeClaim{},
+				},
+			},
+			VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+				Name: testVM,
+				TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+					{
+						VolumeName: testVolume,
+						DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+							Name:             ptr.To(testTargetDV),
+							StorageClassName: ptr.To(testStorageClass),
+						},
+					},
+				},
+			},
+		}
+		Expect(t.updateVMForOfflineStorageMigration(ctx, vm, planVM)).To(Succeed())
+		updatedVM := &virtv1.VirtualMachine{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testVM}, updatedVM)).To(Succeed())
+		Expect(updatedVM.Spec.UpdateVolumesStrategy).To(BeNil())
+		Expect(updatedVM.Spec.Template.Spec.Volumes).To(HaveLen(1))
+		Expect(updatedVM.Spec.Template.Spec.Volumes[0].VolumeSource.DataVolume).ToNot(BeNil())
+		Expect(updatedVM.Spec.Template.Spec.Volumes[0].VolumeSource.DataVolume.Name).To(Equal(testTargetDV))
+	})
+
+	It("should return an error if the vm is nil or empty for offline update", func() {
+		t := &Task{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+		Expect(t.updateVMForOfflineStorageMigration(ctx, nil, migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{})).To(MatchError("vm is nil or empty"))
+		Expect(t.updateVMForOfflineStorageMigration(ctx, &virtv1.VirtualMachine{}, migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{})).To(MatchError("vm is nil or empty"))
+	})
+})
+
+var _ = Describe("StorageMigration offline completion and getPlanVMByName", func() {
+	ctx := context.Background()
+
+	AfterEach(func() {
+		CleanupResources(ctx, k8sClient)
+	})
+
+	It("getPlanVMByName returns plan VM from ReadyMigrations and InProgressMigrations", func() {
+		t := &Task{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Plan: &migrations.VirtualMachineStorageMigrationPlan{
+				Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+					ReadyMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "ready-vm"}},
+					},
+					InProgressMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "inprogress-vm"}},
+					},
+				},
+			},
+		}
+		Expect(t.getPlanVMByName("ready-vm")).ToNot(BeNil())
+		Expect(t.getPlanVMByName("ready-vm").Name).To(Equal("ready-vm"))
+		Expect(t.getPlanVMByName("inprogress-vm")).ToNot(BeNil())
+		Expect(t.getPlanVMByName("inprogress-vm").Name).To(Equal("inprogress-vm"))
+		Expect(t.getPlanVMByName("missing-vm")).To(BeNil())
+	})
+
+	It("isOfflineMigrationCompleted returns false when not all target DVs are Succeeded", func() {
+		t := &Task{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Log:    logf.Log.WithName("test"),
+			Owner:  &migrations.VirtualMachineStorageMigration{ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace}},
+			Plan: &migrations.VirtualMachineStorageMigrationPlan{
+				Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+					ReadyMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+								Name: testVM,
+								TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+									{DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{Name: ptr.To(testTargetDV)}},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		dv := &cdiv1.DataVolume{
+			ObjectMeta: metav1.ObjectMeta{Name: testTargetDV, Namespace: testNamespace},
+			Spec: cdiv1.DataVolumeSpec{
+				Source: &cdiv1.DataVolumeSource{Blank: &cdiv1.DataVolumeBlankImage{}},
+				Storage: &cdiv1.StorageSpec{
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+					},
+				},
+			},
+			Status: cdiv1.DataVolumeStatus{Phase: cdiv1.Pending},
+		}
+		Expect(k8sClient.Create(ctx, dv)).To(Succeed())
+		completed, err := t.isOfflineMigrationCompleted(ctx, testVM)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(completed).To(BeFalse())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testTargetDV}, dv)).To(Succeed())
+		dv.Status.Phase = cdiv1.Succeeded
+		Expect(k8sClient.Status().Update(ctx, dv)).To(Succeed())
+		completed, err = t.isOfflineMigrationCompleted(ctx, testVM)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(completed).To(BeTrue())
+	})
+
+	It("isOfflineMigrationCompleted returns true when target DV is in WaitForFirstConsumer phase", func() {
+		t := &Task{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Log:    logf.Log.WithName("test"),
+			Owner:  &migrations.VirtualMachineStorageMigration{ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace}},
+			Plan: &migrations.VirtualMachineStorageMigrationPlan{
+				Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+					ReadyMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+								Name: testVM,
+								TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+									{DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{Name: ptr.To(testTargetDV)}},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		dv := &cdiv1.DataVolume{
+			ObjectMeta: metav1.ObjectMeta{Name: testTargetDV, Namespace: testNamespace},
+			Spec: cdiv1.DataVolumeSpec{
+				Source: &cdiv1.DataVolumeSource{Blank: &cdiv1.DataVolumeBlankImage{}},
+				Storage: &cdiv1.StorageSpec{
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+					},
+				},
+			},
+			Status: cdiv1.DataVolumeStatus{Phase: cdiv1.Pending},
+		}
+		Expect(k8sClient.Create(ctx, dv)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testTargetDV}, dv)).To(Succeed())
+		dv.Status.Phase = cdiv1.WaitForFirstConsumer
+		Expect(k8sClient.Status().Update(ctx, dv)).To(Succeed())
+		completed, err := t.isOfflineMigrationCompleted(ctx, testVM)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(completed).To(BeTrue())
+	})
+
+	It("isOfflineMigrationCompleted returns false when plan VM is not found", func() {
+		t := &Task{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Owner:  &migrations.VirtualMachineStorageMigration{ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace}},
+			Plan:   &migrations.VirtualMachineStorageMigrationPlan{Status: migrations.VirtualMachineStorageMigrationPlanStatus{}},
+		}
+		completed, err := t.isOfflineMigrationCompleted(ctx, "no-such-vm")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(completed).To(BeFalse())
+	})
 })
 
 var _ = Describe("StorageMigration DV labels", func() {
@@ -544,5 +754,130 @@ var _ = Describe("StorageMigration target DV annotations", func() {
 		Expect(targetDV.Annotations).ToNot(HaveKey("pv.kubernetes.io/bound-by-controller"))
 		Expect(targetDV.Annotations).ToNot(HaveKey("volume.kubernetes.io/storage-provisioner"))
 		Expect(targetDV.Annotations).ToNot(HaveKey("cdi.kubevirt.io/pruned-annotation"))
+	})
+})
+
+var _ = Describe("StorageMigration VM patch ordering", func() {
+	ctx := context.Background()
+
+	AfterEach(func() {
+		CleanupResources(ctx, k8sClient)
+	})
+
+	It("should patch VM to point to new datavolume before creating the datavolume for offline migration", func() {
+		// This test uses an OperationTracker to verify that operations happen in the correct order:
+		// 1. VM is patched to reference the new DataVolume
+		// 2. DataVolume is created
+		//
+		// IMPORTANT: This ordering ensures that if someone tries to start the VM during the
+		// migration window, it will reference the new (not-yet-existing) DV and fail to start,
+		// rather than starting with the old PVCs (which would be data-unsafe).
+
+		// Create source PVC
+		sourcePVC := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      testSourceDV,
+				Namespace: testNamespace,
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse("1Gi"),
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, sourcePVC)).To(Succeed())
+
+		// Create VM pointing to source PVC via DataVolume template
+		vm := createVirtualMachineWithDVTemplate(&cdiv1.DataVolumeSpec{
+			Storage: &cdiv1.StorageSpec{
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+				},
+			},
+		})
+		Expect(k8sClient.Create(ctx, vm)).To(Succeed())
+
+		// Create operation tracker to record the order of operations
+		tracker := &OperationTracker{Client: k8sClient}
+
+		// Create task and plan with the tracker
+		t := &Task{
+			Client: tracker,
+			Scheme: k8sClient.Scheme(),
+			Log:    logf.Log.WithName("test"),
+			Owner: &migrations.VirtualMachineStorageMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-migration",
+					Namespace: testNamespace,
+					UID:       "test-migration-uid",
+				},
+			},
+			Plan: &migrations.VirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-plan",
+					Namespace: testNamespace,
+					UID:       "test-plan-uid",
+				},
+			},
+		}
+
+		planVM := migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+			VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+				Name: testVM,
+				TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+					{
+						VolumeName: testVolume,
+						DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+							Name:             ptr.To(testTargetDV),
+							StorageClassName: ptr.To(testStorageClass),
+						},
+					},
+				},
+			},
+			SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+				{
+					VolumeName: testVolume,
+					Name:       testSourceDV,
+					Namespace:  testNamespace,
+					SourcePVC:  *sourcePVC,
+				},
+			},
+		}
+
+		// Perform offline migration
+		Expect(t.offlineMigrateVM(ctx, planVM)).To(Succeed())
+
+		// CRITICAL: Verify the order of operations
+		// VM Patch must come before DataVolume Create
+		Expect(tracker.Operations).To(HaveLen(2), "Expected exactly 2 operations: Patch VM and Create DV")
+		Expect(tracker.Operations[0]).To(ContainSubstring("Patch:*v1.VirtualMachine:"+testVM),
+			"First operation should be patching the VirtualMachine")
+		Expect(tracker.Operations[1]).To(ContainSubstring("Create:*v1beta1.DataVolume:"+testTargetDV),
+			"Second operation should be creating the DataVolume")
+
+		// Verify VM was patched to point to new DV
+		updatedVM := &virtv1.VirtualMachine{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testVM}, updatedVM)).To(Succeed())
+
+		// Check that VM now points to target DV in the DataVolumeTemplate
+		Expect(updatedVM.Spec.DataVolumeTemplates).To(HaveLen(1))
+		Expect(updatedVM.Spec.DataVolumeTemplates[0].Name).To(Equal(testTargetDV))
+
+		// Check that VM volumes reference the target DV
+		Expect(updatedVM.Spec.Template.Spec.Volumes).To(HaveLen(1))
+		Expect(updatedVM.Spec.Template.Spec.Volumes[0].Name).To(Equal(testVolume))
+		Expect(updatedVM.Spec.Template.Spec.Volumes[0].VolumeSource.DataVolume).ToNot(BeNil())
+		Expect(updatedVM.Spec.Template.Spec.Volumes[0].VolumeSource.DataVolume.Name).To(Equal(testTargetDV))
+
+		// Verify target DV was created
+		targetDV := &cdiv1.DataVolume{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testTargetDV}, targetDV)).To(Succeed())
+
+		// CRITICAL: Verify UpdateVolumesStrategy is NOT set for offline migration
+		// This prevents the VM from starting until DVs are in Succeeded/WaitForFirstConsumer phase
+		Expect(updatedVM.Spec.UpdateVolumesStrategy).To(BeNil(), "UpdateVolumesStrategy should not be set for offline migration to prevent VM from starting prematurely")
 	})
 })
