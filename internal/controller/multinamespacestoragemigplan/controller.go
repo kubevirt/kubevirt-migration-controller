@@ -187,10 +187,23 @@ func (r *MultiNamespaceStorageMigPlanReconciler) validateNamespace(ctx context.C
 
 func (r *MultiNamespaceStorageMigPlanReconciler) createNamespacePlan(ctx context.Context, plan *migrations.MultiNamespaceVirtualMachineStorageMigrationPlan, namespace *migrations.VirtualMachineStorageMigrationPlanNamespaceSpec) error {
 	spec := namespace.VirtualMachineStorageMigrationPlanSpec.DeepCopy()
-	// When the multinamespace plan has RetentionPolicy set (e.g. deleteSource), apply it to the child plan
-	if plan.Spec.RetentionPolicy != nil {
-		spec.RetentionPolicy = plan.Spec.RetentionPolicy
+
+	// Retention policy priority (with CRD defaults in place):
+	// 1. Namespace-specific retentionPolicy (if explicitly set to non-default value)
+	// 2. Multi-namespace plan retentionPolicy (if set to non-default value)
+	// 3. CRD default (keepSource)
+	//
+	// Due to CRD defaulting, both spec.RetentionPolicy and plan.Spec.RetentionPolicy will be non-nil
+	// (defaulted to keepSource). We treat keepSource as "not explicitly set" when determining priority.
+	if plan.Spec.RetentionPolicy != nil && *plan.Spec.RetentionPolicy != migrations.RetentionPolicyKeepSource {
+		// Parent has non-default value
+		if spec.RetentionPolicy == nil || *spec.RetentionPolicy == migrations.RetentionPolicyKeepSource {
+			// Namespace has default or nil - inherit from parent
+			spec.RetentionPolicy = plan.Spec.RetentionPolicy
+		}
+		// else: namespace has explicit non-default value, use it (priority 1)
 	}
+	// else: parent has default (keepSource), namespace keeps its value (default or explicit)
 	namespacePlan := &migrations.VirtualMachineStorageMigrationPlan{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      migrations.GetNamespacedPlanName(plan.Name, namespace.Name),
