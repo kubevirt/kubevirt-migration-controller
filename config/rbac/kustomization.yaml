@@ -28,4 +28,9 @@ resources:
 - storagemigplan_admin_role.yaml
 - storagemigplan_editor_role.yaml
 - storagemigplan_viewer_role.yaml
+# Aggregate roles that cover all migration resources (plans and migrations, both single and multi-namespace)
+# These automatically aggregate into the standard Kubernetes view/edit/admin ClusterRoles
+- migrations_viewer_role.yaml
+- migrations_editor_role.yaml
+- migrations_admin_role.yaml
 
