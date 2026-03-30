@@ -208,8 +208,6 @@ github.com/pkg/errors
 github.com/pmezard/go-difflib/difflib
 # github.com/prometheus/client_golang v1.22.0
 ## explicit; go 1.22
-github.com/prometheus/client_golang/api
-github.com/prometheus/client_golang/api/prometheus/v1
 github.com/prometheus/client_golang/internal/github.com/golang/gddo/httputil
 github.com/prometheus/client_golang/internal/github.com/golang/gddo/httputil/header
 github.com/prometheus/client_golang/prometheus
@@ -1082,6 +1080,9 @@ kubevirt.io/kubevirt/pkg/libvmi/cloudinit
 kubevirt.io/kubevirt/pkg/pointer
 kubevirt.io/kubevirt/pkg/util/net/dns
 kubevirt.io/kubevirt/tests/framework/matcher/helper
+# kubevirt.io/kubevirt-migration-operator v0.2.0-rc.0.0.20260330115220-abf7dfe8b0a1
+## explicit; go 1.23.0
+kubevirt.io/kubevirt-migration-operator/api/v1alpha1
 # sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.31.2
 ## explicit; go 1.21
 sigs.k8s.io/apiserver-network-proxy/konnectivity-client/pkg/client
