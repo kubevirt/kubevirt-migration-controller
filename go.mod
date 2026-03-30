@@ -14,8 +14,6 @@ require (
 	github.com/onsi/gomega v1.38.2
 	github.com/openshift/api v0.0.0
 	github.com/openshift/library-go v0.0.0-20250128093732-a69305d8f397
-	github.com/prometheus/client_golang v1.22.0
-	github.com/prometheus/common v0.62.0
 	google.golang.org/grpc v1.68.1
 	k8s.io/api v0.34.1
 	k8s.io/apimachinery v0.34.1
@@ -24,6 +22,7 @@ require (
 	kubevirt.io/api v1.7.1
 	kubevirt.io/containerized-data-importer-api v1.63.1
 	kubevirt.io/kubevirt v1.7.1
+	kubevirt.io/kubevirt-migration-operator v0.2.0-rc.0.0.20260330115220-abf7dfe8b0a1
 	sigs.k8s.io/controller-runtime v0.20.4
 )
 
@@ -66,7 +65,9 @@ require (
 	github.com/openshift/custom-resource-status v1.1.2 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
+	github.com/prometheus/client_golang v1.22.0 // indirect
 	github.com/prometheus/client_model v0.6.1 // indirect
+	github.com/prometheus/common v0.62.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/spf13/cobra v1.8.1 // indirect
 	github.com/spf13/pflag v1.0.6 // indirect
