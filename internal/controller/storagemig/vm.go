@@ -237,8 +237,11 @@ func (t *Task) prepareVMForStorageMigration(vm *virtv1.VirtualMachine, planVM mi
 
 	vmCopy := vm.DeepCopy()
 
+	// Track which volumes are present in the DataVolume templates and being migrated
+	volumesInTemplate := make(map[string]bool)
 	for i, volume := range vm.Spec.Template.Spec.Volumes {
 		if planPVC, ok := planTargetPVCMap[volume.Name]; ok {
+			volumesInTemplate[volume.Name] = true
 			if volume.PersistentVolumeClaim != nil {
 				vmCopy.Spec.Template.Spec.Volumes[i].PersistentVolumeClaim.ClaimName = *planPVC.DestinationPVC.Name
 			}
@@ -252,15 +255,20 @@ func (t *Task) prepareVMForStorageMigration(vm *virtv1.VirtualMachine, planVM mi
 	for _, pvc := range planVM.SourcePVCs {
 		planPVCNameMap[pvc.Name] = pvc.VolumeName
 	}
+	// Only update DataVolumeTemplates if the corresponding volume is in the template.
+	// Hotplugged volumes will not be defined in the DataVolume templates section.
 	for i, dvTemplate := range vmCopy.Spec.DataVolumeTemplates {
 		if _, ok := planPVCNameMap[dvTemplate.Name]; ok {
 			volumeName := planPVCNameMap[dvTemplate.Name]
-			if targetPVC, ok := planTargetPVCMap[volumeName]; ok {
-				vmCopy.Spec.DataVolumeTemplates[i].Name = *targetPVC.DestinationPVC.Name
-				if vmCopy.Spec.DataVolumeTemplates[i].Spec.Storage != nil {
-					vmCopy.Spec.DataVolumeTemplates[i].Spec.Storage.StorageClassName = targetPVC.DestinationPVC.StorageClassName
-				} else if vmCopy.Spec.DataVolumeTemplates[i].Spec.PVC != nil {
-					vmCopy.Spec.DataVolumeTemplates[i].Spec.PVC.StorageClassName = targetPVC.DestinationPVC.StorageClassName
+			// Only update if this volume is actually in the datavolume template
+			if volumesInTemplate[volumeName] {
+				if targetPVC, ok := planTargetPVCMap[volumeName]; ok {
+					vmCopy.Spec.DataVolumeTemplates[i].Name = *targetPVC.DestinationPVC.Name
+					if vmCopy.Spec.DataVolumeTemplates[i].Spec.Storage != nil {
+						vmCopy.Spec.DataVolumeTemplates[i].Spec.Storage.StorageClassName = targetPVC.DestinationPVC.StorageClassName
+					} else if vmCopy.Spec.DataVolumeTemplates[i].Spec.PVC != nil {
+						vmCopy.Spec.DataVolumeTemplates[i].Spec.PVC.StorageClassName = targetPVC.DestinationPVC.StorageClassName
+					}
 				}
 			}
 		}

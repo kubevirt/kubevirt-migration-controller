@@ -227,6 +227,143 @@ var _ = Describe("StorageMigration VM", func() {
 		Expect(t.updateVMForOfflineStorageMigration(ctx, nil, migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{})).To(MatchError("vm is nil or empty"))
 		Expect(t.updateVMForOfflineStorageMigration(ctx, &virtv1.VirtualMachine{}, migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{})).To(MatchError("vm is nil or empty"))
 	})
+
+	DescribeTable("should handle offline migration with hotplugged volumes and DataVolumeTemplates",
+		func(regularDVTargetName, hotplugDVTargetName string) {
+			// Scenario: VM has a regular disk with DVTemplate + hotplugged disk without DVTemplate
+			// Both are being migrated. The hotplugged volume is in spec.template.spec.volumes
+			// with hotpluggable:true, but has NO DataVolumeTemplate entry.
+			vm := &virtv1.VirtualMachine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testVM,
+					Namespace: testNamespace,
+				},
+				Spec: virtv1.VirtualMachineSpec{
+					DataVolumeTemplates: []virtv1.DataVolumeTemplateSpec{
+						{
+							ObjectMeta: metav1.ObjectMeta{
+								Name: "regular-dv",
+							},
+							Spec: cdiv1.DataVolumeSpec{
+								Storage: &cdiv1.StorageSpec{
+									StorageClassName: ptr.To("old-sc"),
+									Resources: corev1.VolumeResourceRequirements{
+										Requests: corev1.ResourceList{
+											corev1.ResourceStorage: resource.MustParse("1Gi"),
+										},
+									},
+								},
+							},
+						},
+						// No DVTemplate for hotplugged volume!
+					},
+					Template: &virtv1.VirtualMachineInstanceTemplateSpec{
+						Spec: virtv1.VirtualMachineInstanceSpec{
+							Volumes: []virtv1.Volume{
+								{
+									Name: "disk0",
+									VolumeSource: virtv1.VolumeSource{
+										DataVolume: &virtv1.DataVolumeSource{
+											Name: "regular-dv",
+										},
+									},
+								},
+								{
+									Name: "hotplug-disk",
+									VolumeSource: virtv1.VolumeSource{
+										DataVolume: &virtv1.DataVolumeSource{
+											Name:         "hotplug-dv",
+											Hotpluggable: true, // Hotplugged!
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, vm)).To(Succeed())
+
+			t := &Task{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			// Migration plan includes BOTH volumes with target names already populated
+			// (as the plan controller would have done, either from explicit names or generated from suffix)
+			planVM := migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+				SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+					{
+						VolumeName: "disk0",
+						Name:       "regular-dv",
+						Namespace:  testNamespace,
+						SourcePVC:  corev1.PersistentVolumeClaim{},
+					},
+					{
+						VolumeName: "hotplug-disk",
+						Name:       "hotplug-dv",
+						Namespace:  testNamespace,
+						SourcePVC:  corev1.PersistentVolumeClaim{},
+					},
+				},
+				VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+					Name: testVM,
+					TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+						{
+							VolumeName: "disk0",
+							DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+								Name:             ptr.To(regularDVTargetName),
+								StorageClassName: ptr.To("new-sc"),
+							},
+						},
+						{
+							VolumeName: "hotplug-disk",
+							DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+								Name:             ptr.To(hotplugDVTargetName),
+								StorageClassName: ptr.To("new-sc"),
+							},
+						},
+					},
+				},
+			}
+
+			// This should succeed without triggering the KubeVirt webhook error
+			Expect(t.updateVMForOfflineStorageMigration(ctx, vm, planVM)).To(Succeed())
+
+			updatedVM := &virtv1.VirtualMachine{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testVM}, updatedVM)).To(Succeed())
+
+			// Verify volumes are updated
+			Expect(updatedVM.Spec.Template.Spec.Volumes).To(HaveLen(2))
+
+			// Regular volume should point to new DV
+			Expect(updatedVM.Spec.Template.Spec.Volumes[0].Name).To(Equal("disk0"))
+			Expect(updatedVM.Spec.Template.Spec.Volumes[0].VolumeSource.DataVolume.Name).To(Equal(regularDVTargetName))
+
+			// Hotplugged volume should point to new DV and preserve hotpluggable flag
+			Expect(updatedVM.Spec.Template.Spec.Volumes[1].Name).To(Equal("hotplug-disk"))
+			Expect(updatedVM.Spec.Template.Spec.Volumes[1].VolumeSource.DataVolume.Name).To(Equal(hotplugDVTargetName))
+			Expect(updatedVM.Spec.Template.Spec.Volumes[1].VolumeSource.DataVolume.Hotpluggable).To(BeTrue())
+
+			// CRITICAL: Verify DVTemplate behavior
+			// Only the regular volume's DVTemplate should be updated
+			// The hotplugged volume never had a DVTemplate, so there's nothing to update
+			Expect(updatedVM.Spec.DataVolumeTemplates).To(HaveLen(1))
+			Expect(updatedVM.Spec.DataVolumeTemplates[0].Name).To(Equal(regularDVTargetName))
+			Expect(updatedVM.Spec.DataVolumeTemplates[0].Spec.Storage.StorageClassName).To(Equal(ptr.To("new-sc")))
+
+			// Verify UpdateVolumesStrategy is NOT set for offline migration
+			Expect(updatedVM.Spec.UpdateVolumesStrategy).To(BeNil())
+		},
+		Entry("both volumes have explicit target names",
+			"regular-dv-new", "hotplug-dv-new"),
+		Entry("regular volume has explicit name, hotplug uses generated suffix name",
+			"regular-dv-new", "hotplug-dv-mig-abcd"),
+		Entry("regular volume uses generated suffix name, hotplug has explicit name",
+			"regular-dv-mig-xyz9", "hotplug-dv-new"),
+		Entry("both volumes use generated suffix names",
+			"regular-dv-mig-1234", "hotplug-dv-mig-1234"),
+	)
 })
 
 var _ = Describe("StorageMigration offline completion and getPlanVMByName", func() {
