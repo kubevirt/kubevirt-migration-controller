@@ -116,7 +116,11 @@ func (t *Task) revertPlanVolumes(planVM *migrations.VirtualMachineStorageMigrati
 
 func (t *Task) getCancellableMigrations() []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine {
 	cancelMigrations := make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, 0)
-	cancelMigrations = append(cancelMigrations, t.Plan.Status.ReadyMigrations...)
-	cancelMigrations = append(cancelMigrations, t.Plan.Status.InProgressMigrations...)
+	if t.Plan != nil {
+		cancelMigrations = append(cancelMigrations, t.Plan.Status.ReadyMigrations...)
+		cancelMigrations = append(cancelMigrations, t.Plan.Status.InProgressMigrations...)
+	} else {
+		t.Log.V(1).Info("No plan found to get cancellable migrations")
+	}
 	return cancelMigrations
 }
