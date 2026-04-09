@@ -71,6 +71,32 @@ var _ = Describe("MigPlan", func() {
 			return k8serrors.IsNotFound(err)
 		}, 30*time.Second, time.Second).Should(BeTrue())
 
+		By("Deleting the test duplicates migplan")
+		Eventually(func() bool {
+			migrationPlan := &migrations.VirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-plan-duplicates", Namespace: namespace.Name},
+			}
+			err := c.Delete(context.TODO(), migrationPlan, &client.DeleteOptions{})
+			if k8serrors.IsNotFound(err) {
+				return true
+			}
+			Expect(err).ToNot(HaveOccurred())
+			return k8serrors.IsNotFound(err)
+		}, 30*time.Second, time.Second).Should(BeTrue())
+
+		By("Deleting the test multi-namespace plan")
+		Eventually(func() bool {
+			multiNsPlan := &migrations.MultiNamespaceVirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-multinamespace-plan-duplicates", Namespace: namespace.Name},
+			}
+			err := c.Delete(context.TODO(), multiNsPlan, &client.DeleteOptions{})
+			if k8serrors.IsNotFound(err) {
+				return true
+			}
+			Expect(err).ToNot(HaveOccurred())
+			return k8serrors.IsNotFound(err)
+		}, 30*time.Second, time.Second).Should(BeTrue())
+
 		By("Deleting the test namespace")
 		Eventually(func() bool {
 			err := c.Delete(context.TODO(), namespace, &client.DeleteOptions{})
@@ -118,6 +144,117 @@ var _ = Describe("MigPlan", func() {
 			return plan.Status.HasCondition(migrations.PlanNotReady)
 		}, 30*time.Second, time.Second).Should(BeFalse())
 	})
+
+	DescribeTable("should reject plans with duplicate VM names",
+		func(createPlan func(ns string) client.Object) {
+			plan := createPlan(namespace.Name)
+			err := c.Create(context.TODO(), plan, &client.CreateOptions{})
+			Expect(err).To(HaveOccurred())
+			Expect(k8serrors.IsInvalid(err)).To(BeTrue(), "expected Invalid error, got: %v", err)
+			Expect(err.Error()).To(ContainSubstring("Duplicate value"))
+		},
+		Entry("regular migration plan", func(ns string) client.Object {
+			return &migrations.VirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-plan-duplicates",
+					Namespace: ns,
+				},
+				Spec: migrations.VirtualMachineStorageMigrationPlanSpec{
+					VirtualMachines: []migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+						{
+							Name: "test-vm-1",
+							TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+								{
+									VolumeName: "disk0",
+									DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+										Name:             ptr.To("test-pvc-1"),
+										StorageClassName: ptr.To("test-storage-class"),
+										AccessModes:      []migrations.VirtualMachineStorageMigrationPlanAccessMode{"ReadWriteOnce"},
+										VolumeMode:       ptr.To[corev1.PersistentVolumeMode]("Filesystem"),
+									},
+								},
+							},
+						},
+						{
+							Name: "test-vm-2",
+							TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+								{
+									VolumeName: "disk0",
+									DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+										Name:             ptr.To("test-pvc-2"),
+										StorageClassName: ptr.To("test-storage-class"),
+										AccessModes:      []migrations.VirtualMachineStorageMigrationPlanAccessMode{"ReadWriteOnce"},
+										VolumeMode:       ptr.To[corev1.PersistentVolumeMode]("Filesystem"),
+									},
+								},
+							},
+						},
+						{
+							Name: "test-vm-1",
+							TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+								{
+									VolumeName: "disk1",
+									DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+										Name:             ptr.To("test-pvc-3"),
+										StorageClassName: ptr.To("test-storage-class"),
+										AccessModes:      []migrations.VirtualMachineStorageMigrationPlanAccessMode{"ReadWriteOnce"},
+										VolumeMode:       ptr.To[corev1.PersistentVolumeMode]("Filesystem"),
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+		}),
+		Entry("multi-namespace migration plan", func(ns string) client.Object {
+			return &migrations.MultiNamespaceVirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-multinamespace-plan-duplicates",
+					Namespace: ns,
+				},
+				Spec: migrations.MultiNamespaceVirtualMachineStorageMigrationPlanSpec{
+					Namespaces: []migrations.VirtualMachineStorageMigrationPlanNamespaceSpec{
+						{
+							Name: ns,
+							VirtualMachineStorageMigrationPlanSpec: &migrations.VirtualMachineStorageMigrationPlanSpec{
+								VirtualMachines: []migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+									{
+										Name: "test-vm-1",
+										TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+											{
+												VolumeName: "disk0",
+												DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+													Name:             ptr.To("test-pvc-1"),
+													StorageClassName: ptr.To("test-storage-class"),
+													AccessModes:      []migrations.VirtualMachineStorageMigrationPlanAccessMode{"ReadWriteOnce"},
+													VolumeMode:       ptr.To[corev1.PersistentVolumeMode]("Filesystem"),
+												},
+											},
+										},
+									},
+									{
+										Name: "test-vm-1",
+										TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+											{
+												VolumeName: "disk1",
+												DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+													Name:             ptr.To("test-pvc-2"),
+													StorageClassName: ptr.To("test-storage-class"),
+													AccessModes:      []migrations.VirtualMachineStorageMigrationPlanAccessMode{"ReadWriteOnce"},
+													VolumeMode:       ptr.To[corev1.PersistentVolumeMode]("Filesystem"),
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+		}),
+	)
 
 	Context("offline migration", func() {
 		const (

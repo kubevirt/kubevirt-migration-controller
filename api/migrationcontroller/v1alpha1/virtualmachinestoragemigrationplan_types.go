@@ -38,6 +38,8 @@ const (
 
 // VirtualMachineStorageMigrationPlanSpec defines the desired state of VirtualMachineStorageMigrationPlan
 type VirtualMachineStorageMigrationPlanSpec struct {
+	// +listType=map
+	// +listMapKey=name
 	// The virtual machines to migrate.
 	VirtualMachines []VirtualMachineStorageMigrationPlanVirtualMachine `json:"virtualMachines"`
 	// +kubebuilder:validation:Optional
