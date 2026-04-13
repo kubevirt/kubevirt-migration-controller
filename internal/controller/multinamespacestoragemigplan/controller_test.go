@@ -112,9 +112,9 @@ func (o *multiNamespacePlanOptions) withRetentionPolicy(policy migrations.Retent
 	return o
 }
 
-func (o *multiNamespacePlanOptions) withNamespaceSpec(namespace string, spec *migrations.VirtualMachineStorageMigrationPlanSpec) *multiNamespacePlanOptions {
+func (o *multiNamespacePlanOptions) withNamespaceSpec(spec *migrations.VirtualMachineStorageMigrationPlanSpec) *multiNamespacePlanOptions {
 	o.namespaceSpecs = append(o.namespaceSpecs, migrations.VirtualMachineStorageMigrationPlanNamespaceSpec{
-		Name:                                   namespace,
+		Name:                                   testutils.TestNamespace,
 		VirtualMachineStorageMigrationPlanSpec: spec,
 	})
 	return o
@@ -140,7 +140,7 @@ func (o *multiNamespacePlanOptions) build() *migrations.MultiNamespaceVirtualMac
 // createMultiNamespaceStorageMigrationPlan creates a basic multi-namespace plan with default values
 func createMultiNamespaceStorageMigrationPlan(name string) *migrations.MultiNamespaceVirtualMachineStorageMigrationPlan {
 	return newMultiNamespacePlanOptions(name).
-		withNamespaceSpec(testutils.TestNamespace, &migrations.VirtualMachineStorageMigrationPlanSpec{
+		withNamespaceSpec(&migrations.VirtualMachineStorageMigrationPlanSpec{
 			VirtualMachines: []migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
 				{
 					Name: "simple-vm",
@@ -319,7 +319,7 @@ var _ = Describe("MultiNamespaceStorageMigPlan Controller", func() {
 		It("should create namespace plan with basic spec", func() {
 			multiPlan := newMultiNamespacePlanOptions("test-multi-plan").
 				withUID("test-uid-123").
-				withNamespaceSpec(testutils.TestNamespace, newTestVMSpec("test-vm", nil)).
+				withNamespaceSpec(newTestVMSpec("test-vm", nil)).
 				build()
 
 			err := reconciler.createNamespacePlan(ctx, multiPlan, &multiPlan.Spec.Namespaces[0])
@@ -347,7 +347,7 @@ var _ = Describe("MultiNamespaceStorageMigPlan Controller", func() {
 		It("should handle already existing plan gracefully", func() {
 			multiPlan := newMultiNamespacePlanOptions("test-multi-plan").
 				withUID("test-uid-456").
-				withNamespaceSpec(testutils.TestNamespace, newTestVMSpec("test-vm", nil)).
+				withNamespaceSpec(newTestVMSpec("test-vm", nil)).
 				build()
 
 			By("Creating the plan the first time")
@@ -364,7 +364,7 @@ var _ = Describe("MultiNamespaceStorageMigPlan Controller", func() {
 				multiPlan := newMultiNamespacePlanOptions("test-multi-plan").
 					withUID("test-uid-retention").
 					withRetentionPolicy(multiPlanPolicy).
-					withNamespaceSpec(testutils.TestNamespace, newTestVMSpec("test-vm", namespacePolicy)).
+					withNamespaceSpec(newTestVMSpec("test-vm", namespacePolicy)).
 					build()
 
 				err := reconciler.createNamespacePlan(ctx, multiPlan, &multiPlan.Spec.Namespaces[0])
@@ -403,7 +403,7 @@ var _ = Describe("MultiNamespaceStorageMigPlan Controller", func() {
 		It("should create plan with correct naming", func() {
 			multiPlan := newMultiNamespacePlanOptions("my-migration-plan").
 				withUID("test-uid-jkl").
-				withNamespaceSpec(testutils.TestNamespace, newTestVMSpec("test-vm", nil)).
+				withNamespaceSpec(newTestVMSpec("test-vm", nil)).
 				build()
 
 			err := reconciler.createNamespacePlan(ctx, multiPlan, &multiPlan.Spec.Namespaces[0])
@@ -423,7 +423,7 @@ var _ = Describe("MultiNamespaceStorageMigPlan Controller", func() {
 			originalVMName := "original-vm"
 			multiPlan := newMultiNamespacePlanOptions("test-multi-plan").
 				withUID("test-uid-mno").
-				withNamespaceSpec(testutils.TestNamespace, newTestVMSpec(originalVMName, nil)).
+				withNamespaceSpec(newTestVMSpec(originalVMName, nil)).
 				build()
 
 			err := reconciler.createNamespacePlan(ctx, multiPlan, &multiPlan.Spec.Namespaces[0])
