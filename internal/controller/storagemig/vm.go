@@ -237,11 +237,11 @@ func (t *Task) prepareVMForStorageMigration(vm *virtv1.VirtualMachine, planVM mi
 
 	vmCopy := vm.DeepCopy()
 
-	// Track which volumes are present in the DataVolume templates and being migrated
-	volumesInTemplate := make(map[string]bool)
+	// Track which volume names we found in spec.template.spec.volumes that are being migrated.
+	volumesBeingMigrated := make(map[string]struct{})
 	for i, volume := range vm.Spec.Template.Spec.Volumes {
 		if planPVC, ok := planTargetPVCMap[volume.Name]; ok {
-			volumesInTemplate[volume.Name] = true
+			volumesBeingMigrated[volume.Name] = struct{}{}
 			if volume.PersistentVolumeClaim != nil {
 				vmCopy.Spec.Template.Spec.Volumes[i].PersistentVolumeClaim.ClaimName = *planPVC.DestinationPVC.Name
 			}
@@ -255,22 +255,26 @@ func (t *Task) prepareVMForStorageMigration(vm *virtv1.VirtualMachine, planVM mi
 	for _, pvc := range planVM.SourcePVCs {
 		planPVCNameMap[pvc.Name] = pvc.VolumeName
 	}
-	// Only update DataVolumeTemplates if the corresponding volume is in the template.
-	// Hotplugged volumes will not be defined in the DataVolume templates section.
+
+	// Update DataVolumeTemplates only for volumes we found in the spec above.
 	for i, dvTemplate := range vmCopy.Spec.DataVolumeTemplates {
-		if _, ok := planPVCNameMap[dvTemplate.Name]; ok {
-			volumeName := planPVCNameMap[dvTemplate.Name]
-			// Only update if this volume is actually in the datavolume template
-			if volumesInTemplate[volumeName] {
-				if targetPVC, ok := planTargetPVCMap[volumeName]; ok {
-					vmCopy.Spec.DataVolumeTemplates[i].Name = *targetPVC.DestinationPVC.Name
-					if vmCopy.Spec.DataVolumeTemplates[i].Spec.Storage != nil {
-						vmCopy.Spec.DataVolumeTemplates[i].Spec.Storage.StorageClassName = targetPVC.DestinationPVC.StorageClassName
-					} else if vmCopy.Spec.DataVolumeTemplates[i].Spec.PVC != nil {
-						vmCopy.Spec.DataVolumeTemplates[i].Spec.PVC.StorageClassName = targetPVC.DestinationPVC.StorageClassName
-					}
-				}
-			}
+		volumeName, ok := planPVCNameMap[dvTemplate.Name]
+		if !ok {
+			continue
+		}
+
+		// Only update if we found this volume in spec.template.spec.volumes and it has a target
+		_, inSpec := volumesBeingMigrated[volumeName]
+		targetPVC, hasTarget := planTargetPVCMap[volumeName]
+		if !inSpec || !hasTarget {
+			continue
+		}
+
+		vmCopy.Spec.DataVolumeTemplates[i].Name = *targetPVC.DestinationPVC.Name
+		if vmCopy.Spec.DataVolumeTemplates[i].Spec.Storage != nil {
+			vmCopy.Spec.DataVolumeTemplates[i].Spec.Storage.StorageClassName = targetPVC.DestinationPVC.StorageClassName
+		} else if vmCopy.Spec.DataVolumeTemplates[i].Spec.PVC != nil {
+			vmCopy.Spec.DataVolumeTemplates[i].Spec.PVC.StorageClassName = targetPVC.DestinationPVC.StorageClassName
 		}
 	}
 
