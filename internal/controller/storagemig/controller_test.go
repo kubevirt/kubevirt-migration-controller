@@ -104,7 +104,7 @@ var _ = Describe("StorageMigration Controller", func() {
 	})
 
 	Context("When reconciling a migration that is completed", func() {
-		It("Should allow setting the field for the first time, but not update/delete it", func() {
+		It("should enforce retentionPolicy immutability with type-level and field-level validation", func() {
 			key := types.NamespacedName{Name: "test-resource", Namespace: "default"}
 			created := &migrations.VirtualMachineStorageMigrationPlan{
 				ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
@@ -126,22 +126,32 @@ var _ = Describe("StorageMigration Controller", func() {
 			existing := &migrations.VirtualMachineStorageMigrationPlan{}
 			Expect(k8sClient.Get(ctx, key, existing)).To(Succeed())
 
-			// Attempt to change the value
+			By("Attempting to change value from deleteSource to keepSource - field-level validation should fail")
 			existing.Spec.RetentionPolicy = ptr.To(migrations.RetentionPolicyKeepSource)
 			err := k8sClient.Update(ctx, existing)
 
 			Expect(err).To(HaveOccurred())
-			// Verify the specific CEL error message from your marker
-			Expect(err.Error()).To(ContainSubstring("retentionPolicy is immutable"))
+			Expect(err.Error()).To(ContainSubstring("retentionPolicy"))
 			existing = &migrations.VirtualMachineStorageMigrationPlan{}
 			Expect(k8sClient.Get(ctx, key, existing)).To(Succeed())
+			Expect(*existing.Spec.RetentionPolicy).To(Equal(migrations.RetentionPolicyDeleteSource),
+				"Value should not have changed")
 
-			// Attempt to delete (set to nil)
+			By("Attempting to remove retentionPolicy (set to nil)")
 			existing.Spec.RetentionPolicy = nil
 			err = k8sClient.Update(ctx, existing)
 
+			// With CRD defaulting, nil becomes keepSource, so this triggers field-level validation
+			// The error will be about value change (deleteSource -> keepSource) not removal
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("retentionPolicy is immutable"))
+			Expect(err.Error()).To(Or(
+				ContainSubstring("retentionPolicy value cannot be changed"),
+				ContainSubstring("retentionPolicy cannot be removed"),
+			), "Either field-level or type-level validation should prevent the change")
+			existing = &migrations.VirtualMachineStorageMigrationPlan{}
+			Expect(k8sClient.Get(ctx, key, existing)).To(Succeed())
+			Expect(*existing.Spec.RetentionPolicy).To(Equal(migrations.RetentionPolicyDeleteSource),
+				"Value should still be deleteSource")
 		})
 	})
 })
