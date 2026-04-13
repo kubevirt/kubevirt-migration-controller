@@ -56,6 +56,8 @@ import (
 	"kubevirt.io/kubevirt-migration-controller/internal/controller/multinamespacestoragemigplan"
 	storagemig "kubevirt.io/kubevirt-migration-controller/internal/controller/storagemig"
 	storagemigplan "kubevirt.io/kubevirt-migration-controller/internal/controller/storagemigplan"
+	componenthelpers "kubevirt.io/kubevirt-migration-controller/pkg/component-helpers"
+	migrationsv1alpha1 "kubevirt.io/kubevirt-migration-operator/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -71,6 +73,7 @@ func init() {
 	utilruntime.Must(routev1.AddToScheme(scheme))
 	utilruntime.Must(ocpconfigv1.AddToScheme(scheme))
 	utilruntime.Must(migrations.AddToScheme(scheme))
+	utilruntime.Must(migrationsv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -123,6 +126,23 @@ func main() {
 	if !enableHTTP2 {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
+
+	managedTLSWatcher := componenthelpers.NewManagedTLSWatcher()
+
+	cryptoPolicyOpt := func(c *tls.Config) {
+		c.GetConfigForClient = func(t *tls.ClientHelloInfo) (*tls.Config, error) {
+			config := c.Clone()
+			if managedTLSWatcher != nil {
+				ctx := t.Context()
+				cc := managedTLSWatcher.GetTLSConfig(ctx)
+				config.CipherSuites = cc.CipherSuites
+				config.MinVersion = cc.MinVersion
+			}
+			return config, nil
+		}
+	}
+
+	tlsOpts = append(tlsOpts, cryptoPolicyOpt)
 
 	// Create watchers for metrics and webhooks certificates
 	var metricsCertWatcher, webhookCertWatcher *certwatcher.CertWatcher
@@ -261,6 +281,12 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "MultiNamespaceStorageMigration")
 		os.Exit(1)
 	}
+
+	managedTLSWatcher.SetCache(mgr.GetCache())
+	if err := mgr.Add(managedTLSWatcher); err != nil {
+		setupLog.Error(err, "unable to add TLS watcher to manager")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if metricsCertWatcher != nil {
@@ -301,6 +327,11 @@ func main() {
 func getCacheOptions(apiClient client.Client) cache.Options {
 	ns := getNamespace("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
 
+	// MigController is intentionally not listed in ByObject.
+	// controller-runtime iterates ByObject entries at cache init
+	// time and calls apiutil.IsObjectNamespaced for each, which
+	// fails if the CRD is not registered in the API server.
+	// See: https://github.com/kubernetes-sigs/controller-runtime/issues/2456
 	cacheOptions := cache.Options{
 		ByObject: map[client.Object]cache.ByObject{
 			&v1.ConfigMap{}: {
