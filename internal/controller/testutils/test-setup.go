@@ -47,10 +47,16 @@ func CreateMigPlanNamespace(ctx context.Context, client client.Client, namespace
 }
 
 func DeleteKubeVirtNamespace(ctx context.Context, client client.Client, namespace string) {
+	if client == nil {
+		return
+	}
 	Expect(client.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})).To(Succeed())
 }
 
 func DeleteMigPlanNamespace(ctx context.Context, client client.Client, namespace string) {
+	if client == nil {
+		return
+	}
 	Expect(client.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})).To(Succeed())
 }
 
