@@ -28,6 +28,7 @@ const (
 )
 
 // MultiNamespaceVirtualMachineStorageMigrationPlanSpec defines the desired state of MultiNamespaceVirtualMachineStorageMigrationPlan
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.retentionPolicy) || has(self.retentionPolicy)", message="retentionPolicy cannot be removed once set"
 type MultiNamespaceVirtualMachineStorageMigrationPlanSpec struct {
 	// +patchStrategy=merge
 	// +patchMergeKey=name
@@ -37,7 +38,7 @@ type MultiNamespaceVirtualMachineStorageMigrationPlanSpec struct {
 	Namespaces []VirtualMachineStorageMigrationPlanNamespaceSpec `json:"namespaces"`
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:default=keepSource
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf", message="retentionPolicy is immutable"
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf", message="retentionPolicy value cannot be changed once set"
 	// RetentionPolicy indicates whether to keep or delete the source DataVolume/PVC after each VM migration completes
 	// in each created namespace plan. When set to "deleteSource", every created VirtualMachineStorageMigrationPlan
 	// will have retentionPolicy set to deleteSource. When "keepSource" or unset, child plans keep their per-namespace
