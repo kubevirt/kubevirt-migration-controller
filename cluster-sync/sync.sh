@@ -17,9 +17,9 @@ else
   DOCKER_REMOTE_REPO="${DOCKER_REPO}"
 fi
 
-# push to local registry provided by kvci
+# push to local registry provided by kubevirtci
 make buildah-manifest-clean DOCKER_REPO="${DOCKER_REMOTE_REPO}" && make buildah-manifest DOCKER_REPO="${DOCKER_REMOTE_REPO}" && make buildah-manifest-push DOCKER_REPO="${DOCKER_REMOTE_REPO}"
-# the "cluster" (kvci VM) only understands the alias registry:5000 (which maps to localhost:${port})
+# the "cluster" (kubevirtci VM) only understands the alias registry:5000 (which maps to localhost:${port})
 if [[ "$DOCKER_REPO" == "localhost" ]]; then
   MANIFEST_IMG="registry:5000/${IMG}"
 else
