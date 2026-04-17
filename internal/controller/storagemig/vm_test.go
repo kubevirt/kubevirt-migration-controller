@@ -228,8 +228,8 @@ var _ = Describe("StorageMigration VM", func() {
 		Expect(t.updateVMForOfflineStorageMigration(ctx, &virtv1.VirtualMachine{}, migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{})).To(MatchError("vm is nil or empty"))
 	})
 
-	DescribeTable("should handle offline migration with hotplugged volumes and DataVolumeTemplates",
-		func(regularDVTargetName, hotplugDVTargetName string) {
+	DescribeTable("should handle migration with hotplugged volumes and DataVolumeTemplates",
+		func(isLiveMigration bool, regularDVTargetName, hotplugDVTargetName string) {
 			// Scenario: VM has a regular disk with DVTemplate + hotplugged disk without DVTemplate
 			// Both are being migrated. The hotplugged volume is in spec.template.spec.volumes
 			// with hotpluggable:true, but has NO DataVolumeTemplate entry.
@@ -327,8 +327,13 @@ var _ = Describe("StorageMigration VM", func() {
 				},
 			}
 
+			// Call the appropriate update function based on migration type
 			// This should succeed without triggering the KubeVirt webhook error
-			Expect(t.updateVMForOfflineStorageMigration(ctx, vm, planVM)).To(Succeed())
+			if isLiveMigration {
+				Expect(t.updateVMForStorageMigration(ctx, vm, planVM)).To(Succeed())
+			} else {
+				Expect(t.updateVMForOfflineStorageMigration(ctx, vm, planVM)).To(Succeed())
+			}
 
 			updatedVM := &virtv1.VirtualMachine{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testVM}, updatedVM)).To(Succeed())
@@ -352,17 +357,30 @@ var _ = Describe("StorageMigration VM", func() {
 			Expect(updatedVM.Spec.DataVolumeTemplates[0].Name).To(Equal(regularDVTargetName))
 			Expect(updatedVM.Spec.DataVolumeTemplates[0].Spec.Storage.StorageClassName).To(Equal(ptr.To("new-sc")))
 
-			// Verify UpdateVolumesStrategy is NOT set for offline migration
-			Expect(updatedVM.Spec.UpdateVolumesStrategy).To(BeNil())
+			// CRITICAL: Verify UpdateVolumesStrategy based on migration type
+			if isLiveMigration {
+				Expect(updatedVM.Spec.UpdateVolumesStrategy).ToNot(BeNil())
+				Expect(*updatedVM.Spec.UpdateVolumesStrategy).To(Equal(virtv1.UpdateVolumesStrategyMigration))
+			} else {
+				Expect(updatedVM.Spec.UpdateVolumesStrategy).To(BeNil())
+			}
 		},
-		Entry("both volumes have explicit target names",
-			"regular-dv-new", "hotplug-dv-new"),
-		Entry("regular volume has explicit name, hotplug uses generated suffix name",
-			"regular-dv-new", "hotplug-dv-mig-abcd"),
-		Entry("regular volume uses generated suffix name, hotplug has explicit name",
-			"regular-dv-mig-xyz9", "hotplug-dv-new"),
-		Entry("both volumes use generated suffix names",
-			"regular-dv-mig-1234", "hotplug-dv-mig-1234"),
+		Entry("offline: both volumes have explicit target names",
+			false, "regular-dv-new", "hotplug-dv-new"),
+		Entry("offline: regular volume has explicit name, hotplug uses generated suffix name",
+			false, "regular-dv-new", "hotplug-dv-mig-abcd"),
+		Entry("offline: regular volume uses generated suffix name, hotplug has explicit name",
+			false, "regular-dv-mig-xyz9", "hotplug-dv-new"),
+		Entry("offline: both volumes use generated suffix names",
+			false, "regular-dv-mig-1234", "hotplug-dv-mig-1234"),
+		Entry("live: both volumes have explicit target names",
+			true, "regular-dv-new", "hotplug-dv-new"),
+		Entry("live: regular volume has explicit name, hotplug uses generated suffix name",
+			true, "regular-dv-new", "hotplug-dv-mig-abcd"),
+		Entry("live: regular volume uses generated suffix name, hotplug has explicit name",
+			true, "regular-dv-mig-xyz9", "hotplug-dv-new"),
+		Entry("live: both volumes use generated suffix names",
+			true, "regular-dv-mig-1234", "hotplug-dv-mig-1234"),
 	)
 })
 
