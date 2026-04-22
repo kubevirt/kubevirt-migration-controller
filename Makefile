@@ -392,6 +392,16 @@ cluster-up: ## Start a kubevirtci cluster. set KUBEVIRT_PROVIDER environment var
 cluster-sync: ## Build the controller/importer/cloner, and push it into a running cluster. The cluster must be up before running a cluster sync. Also generates a manifest and applies it to the running cluster after pushing the images to it.
 	DOCKER_REPO=$(DOCKER_REPO) IMG=$(IMG) ./cluster-sync/sync.sh
 
+.PHONY: cluster-sync-operator
+cluster-sync-operator: ## Deploy the migration controller using the operator from quay.io. Uses latest operator image, or release-specific version if on a release branch.
+	OPERATOR_TAG_OVERRIDE=$(OPERATOR_TAG_OVERRIDE) \
+	OPERATOR_BRANCH_OVERRIDE=$(OPERATOR_BRANCH_OVERRIDE) \
+	CONTROLLER_IMAGE=$(CONTROLLER_IMAGE) \
+	OPERATOR_NAMESPACE=$(OPERATOR_NAMESPACE) \
+	OPERATOR_REPO=$(OPERATOR_REPO) \
+	CERT_MANAGER_VERSION=$(CERT_MANAGER_VERSION) \
+	./cluster-sync/sync-operator.sh
+
 .PHONY: cluster-down
 cluster-down: ## Stop the cluster, doing a make cluster-down && make cluster-up will basically restart the cluster into an empty fresh state.
 	./cluster-up/down.sh
