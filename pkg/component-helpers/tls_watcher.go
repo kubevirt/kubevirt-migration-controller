@@ -24,6 +24,7 @@ import (
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	migrationsv1alpha1 "kubevirt.io/kubevirt-migration-operator/api/v1alpha1"
 )
@@ -78,12 +79,14 @@ type cryptoConfig struct {
 type ManagedTLSWatcher struct {
 	mu            sync.RWMutex
 	cache         cache.Cache
+	namespace     string
 	defaultConfig *cryptoConfig
 	ready         bool
 }
 
-func NewManagedTLSWatcher() *ManagedTLSWatcher {
+func NewManagedTLSWatcher(namespace string) *ManagedTLSWatcher {
 	return &ManagedTLSWatcher{
+		namespace:     namespace,
 		defaultConfig: cryptoConfigFromSpec(nil),
 	}
 }
@@ -97,10 +100,14 @@ func (m *ManagedTLSWatcher) SetCache(c cache.Cache) {
 func (m *ManagedTLSWatcher) Start(ctx context.Context) error {
 	m.mu.RLock()
 	c := m.cache
+	ns := m.namespace
 	m.mu.RUnlock()
 
 	if c == nil {
 		return fmt.Errorf("no cache provided for tls watcher")
+	}
+	if ns == "" {
+		return fmt.Errorf("no namespace provided for tls watcher")
 	}
 	log.Info("ManagedTLSWatcher: starting, waiting for cache sync")
 	if !c.WaitForCacheSync(ctx) {
@@ -108,7 +115,7 @@ func (m *ManagedTLSWatcher) Start(ctx context.Context) error {
 	}
 
 	list := &migrationsv1alpha1.MigControllerList{}
-	if err := c.List(ctx, list); err != nil {
+	if err := c.List(ctx, list, client.InNamespace(ns)); err != nil {
 		log.Info("MigController CRD not available, using default TLS configuration", "error", err)
 		<-ctx.Done()
 		return nil
@@ -131,14 +138,15 @@ func (m *ManagedTLSWatcher) GetTLSConfig(ctx context.Context) *cryptoConfig {
 	m.mu.RLock()
 	ready := m.ready
 	c := m.cache
+	ns := m.namespace
 	m.mu.RUnlock()
 
-	if !ready || c == nil {
+	if !ready || c == nil || ns == "" {
 		return m.defaultConfig
 	}
 
 	list := &migrationsv1alpha1.MigControllerList{}
-	if err := c.List(ctx, list); err != nil || len(list.Items) == 0 {
+	if err := c.List(ctx, list, client.InNamespace(ns)); err != nil || len(list.Items) == 0 {
 		return m.defaultConfig
 	}
 

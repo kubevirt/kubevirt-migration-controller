@@ -9,6 +9,9 @@ CERT_MANAGER_VERSION=${CERT_MANAGER_VERSION:-v1.16.3}
 
 make undeploy || echo "this is fine"
 
+IMG=${IMG:-kubevirt-migration-controller}
+TAG=${TAG:-latest}
+
 if [[ "$DOCKER_REPO" == "localhost" ]]; then
   port=$(./cluster-up/cli.sh ports registry | xargs)
   DOCKER_REMOTE_REPO="${DOCKER_REPO}:${port}"
@@ -18,12 +21,14 @@ else
 fi
 
 # push to local registry provided by kubevirtci
-make buildah-manifest-clean DOCKER_REPO="${DOCKER_REMOTE_REPO}" && make buildah-manifest DOCKER_REPO="${DOCKER_REMOTE_REPO}" && make buildah-manifest-push DOCKER_REPO="${DOCKER_REMOTE_REPO}"
+make buildah-manifest-clean DOCKER_REPO="${DOCKER_REMOTE_REPO}" IMG="${IMG}" TAG="${TAG}" && \
+  make buildah-manifest DOCKER_REPO="${DOCKER_REMOTE_REPO}" IMG="${IMG}" TAG="${TAG}" && \
+  make buildah-manifest-push DOCKER_REPO="${DOCKER_REMOTE_REPO}" IMG="${IMG}" TAG="${TAG}"
 # the "cluster" (kubevirtci VM) only understands the alias registry:5000 (which maps to localhost:${port})
 if [[ "$DOCKER_REPO" == "localhost" ]]; then
-  MANIFEST_IMG="registry:5000/${IMG}"
+  MANIFEST_IMG="registry:5000/${IMG}:${TAG}"
 else
-  MANIFEST_IMG="${DOCKER_REPO}/${IMG}"
+  MANIFEST_IMG="${DOCKER_REPO}/${IMG}:${TAG}"
 fi
 make deploy MANIFEST_IMG="${MANIFEST_IMG}"
 

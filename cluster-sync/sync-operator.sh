@@ -8,7 +8,34 @@ source ./cluster-up/cluster/${KUBEVIRT_PROVIDER}/provider.sh
 CERT_MANAGER_VERSION=${CERT_MANAGER_VERSION:-v1.16.3}
 OPERATOR_NAMESPACE=${OPERATOR_NAMESPACE:-kubevirt}
 OPERATOR_REPO=${OPERATOR_REPO:-quay.io/kubevirt/kubevirt-migration-operator}
-CONTROLLER_IMAGE=${CONTROLLER_IMAGE:-quay.io/kubevirt/kubevirt-migration-controller:latest}
+
+# Build and push controller image to local registry
+IMG=${IMG:-kubevirt-migration-controller}
+TAG=${TAG:-local}
+
+if [[ "$DOCKER_REPO" == "localhost" ]]; then
+  port=$(./cluster-up/cli.sh ports registry | xargs)
+  DOCKER_REMOTE_REPO="${DOCKER_REPO}:${port}"
+  export BUILDAH_TLS_VERIFY=false
+else
+  DOCKER_REMOTE_REPO="${DOCKER_REPO}"
+fi
+
+# Build and push the controller image
+make buildah-manifest-clean DOCKER_REPO="${DOCKER_REMOTE_REPO}" IMG="${IMG}" TAG="${TAG}" && \
+  make buildah-manifest DOCKER_REPO="${DOCKER_REMOTE_REPO}" IMG="${IMG}" TAG="${TAG}" && \
+  make buildah-manifest-push DOCKER_REPO="${DOCKER_REMOTE_REPO}" IMG="${IMG}" TAG="${TAG}"
+
+# Set CONTROLLER_IMAGE to the built image
+# The "cluster" (kubevirtci VM) only understands the alias registry:5000 (which maps to localhost:${port})
+if [[ "$DOCKER_REPO" == "localhost" ]]; then
+  CONTROLLER_IMAGE_DEFAULT="registry:5000/${IMG}:${TAG}"
+else
+  CONTROLLER_IMAGE_DEFAULT="${DOCKER_REPO}/${IMG}:${TAG}"
+fi
+
+CONTROLLER_IMAGE=${CONTROLLER_IMAGE:-$CONTROLLER_IMAGE_DEFAULT}
+echo "Using controller image: ${CONTROLLER_IMAGE}"
 
 # Label to identify all resources created by this script
 MANAGED_BY_LABEL="migration.kubevirt.io/managed-by=cluster-sync-operator"
@@ -44,18 +71,46 @@ echo "Deploying kubevirt-migration-operator from: ${OPERATOR_IMAGE}"
 echo "Using RBAC manifests from operator branch: ${OPERATOR_BRANCH}"
 
 # Undeploy any existing kustomize-based deployment
-make undeploy || echo "No existing deployment to undeploy"
+make undeploy DEPLOYMENT_TARGET=default || echo "No existing deployment to undeploy"
 
-# Clean up existing operator deployment if present
-echo "Cleaning up existing operator resources..."
+echo "Cleaning up existing operator and controller resources..."
 
-# Delete all resources with our management label
+# Step 1: Delete MigController CR first so the existing operator can clean up resources it manages
+echo "Deleting MigController CR to trigger operator cleanup..."
+_kubectl delete migcontroller --all -n "${OPERATOR_NAMESPACE}" --ignore-not-found=true --timeout=120s 2>/dev/null || true
+
+# Wait for operator to clean up the controller resources
+echo "Waiting for operator to clean up controller resources..."
+sleep 10
+
+# Step 2: Delete the operator itself
+echo "Deleting operator deployment..."
 _kubectl delete all,serviceaccount,role,rolebinding,clusterrole,clusterrolebinding,crd -l "${MANAGED_BY_LABEL}" -n "${OPERATOR_NAMESPACE}" --ignore-not-found=true --timeout=60s 2>/dev/null || true
 _kubectl delete clusterrole,clusterrolebinding -l "${MANAGED_BY_LABEL}" --ignore-not-found=true --timeout=60s 2>/dev/null || true
 _kubectl delete crd -l "${MANAGED_BY_LABEL}" --ignore-not-found=true --timeout=60s 2>/dev/null || true
 
-# Also delete MigController CRs (may not have our label if created manually)
-_kubectl delete migcontroller --all -n "${OPERATOR_NAMESPACE}" --ignore-not-found=true --timeout=60s 2>/dev/null || true
+# Step 3: Clean up any orphaned resources that the operator didn't remove
+echo "Cleaning up any remaining orphaned resources..."
+
+# Delete controller deployment if still exists
+_kubectl delete deployment kubevirt-migration-controller -n "${OPERATOR_NAMESPACE}" --ignore-not-found=true --timeout=60s 2>/dev/null || true
+
+# Delete controller RBAC
+_kubectl delete serviceaccount kubevirt-migration-sa -n "${OPERATOR_NAMESPACE}" --ignore-not-found=true 2>/dev/null || true
+_kubectl delete role kubevirt-migration-controller -n "${OPERATOR_NAMESPACE}" --ignore-not-found=true 2>/dev/null || true
+_kubectl delete rolebinding kubevirt-migration-controller -n "${OPERATOR_NAMESPACE}" --ignore-not-found=true 2>/dev/null || true
+_kubectl delete clusterrole kubevirt-migration-controller kubevirt-migration-sa --ignore-not-found=true 2>/dev/null || true
+_kubectl delete clusterrole migrations.kubevirt.io:admin migrations.kubevirt.io:edit migrations.kubevirt.io:view --ignore-not-found=true 2>/dev/null || true
+_kubectl delete clusterrolebinding kubevirt-migration-controller kubevirt-migration-sa --ignore-not-found=true 2>/dev/null || true
+
+# Delete migration controller CRDs
+_kubectl delete crd virtualmachinestoragemigrationplans.migrations.kubevirt.io --ignore-not-found=true 2>/dev/null || true
+_kubectl delete crd virtualmachinestoragemigrations.migrations.kubevirt.io --ignore-not-found=true 2>/dev/null || true
+_kubectl delete crd multinamespacevirtualmachinestoragemigrationplans.migrations.kubevirt.io --ignore-not-found=true 2>/dev/null || true
+_kubectl delete crd multinamespacevirtualmachinestoragemigrations.migrations.kubevirt.io --ignore-not-found=true 2>/dev/null || true
+
+echo "Waiting for CRD deletion to complete..."
+sleep 5
 
 echo "Cleanup complete."
 
