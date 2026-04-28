@@ -16,8 +16,6 @@ spec:
   replicas: 1
   template:
     metadata:
-      annotations:
-        kubectl.kubernetes.io/default-container: controller
       labels:
         control-plane: controller
         app.kubernetes.io/name: kubevirt-migration-controller
@@ -63,12 +61,9 @@ spec:
           mountPath: /etc/ssl/certs/kubevirt-ca
           readOnly: true
         resources:
-          limits:
-            cpu: 500m
-            memory: 128Mi
           requests:
-            cpu: 10m
-            memory: 64Mi
+            cpu: 100m
+            memory: 150Mi
       volumes:
       - name: kubevirt-ca-configmap
         configMap:
