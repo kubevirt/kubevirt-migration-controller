@@ -127,7 +127,8 @@ func main() {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
 
-	managedTLSWatcher := componenthelpers.NewManagedTLSWatcher()
+	ns := getNamespace("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+	managedTLSWatcher := componenthelpers.NewManagedTLSWatcher(ns)
 
 	cryptoPolicyOpt := func(c *tls.Config) {
 		c.GetConfigForClient = func(t *tls.ClientHelloInfo) (*tls.Config, error) {
@@ -321,17 +322,29 @@ func main() {
 	}
 }
 
+// checkMigControllerCRDExists checks if the MigController CRD is installed in the cluster.
+// Returns (true, nil) if CRD exists, (false, nil) if CRD not installed, or (false, error) for other errors.
+// Uses List instead of Get to avoid needing cluster-scoped CRD permissions.
+func checkMigControllerCRDExists(ctx context.Context, apiClient client.Client, namespace string) (bool, error) {
+	list := &migrationsv1alpha1.MigControllerList{}
+	if err := apiClient.List(ctx, list, client.InNamespace(namespace)); err == nil {
+		// CRD exists (list succeeded, even if empty)
+		return true, nil
+	} else if meta.IsNoMatchError(err) {
+		// CRD doesn't exist - expected in cluster-sync mode
+		return false, nil
+	} else {
+		// Other errors (RBAC for listing resources, network, etc.)
+		return false, err
+	}
+}
+
 // Restricts some types in the cache's ListWatch to specific fields/labels per GVK at the specified object,
 // other types will continue working normally.
 // Note: objects you read once with the controller runtime client are cached.
 func getCacheOptions(apiClient client.Client) cache.Options {
 	ns := getNamespace("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
 
-	// MigController is intentionally not listed in ByObject.
-	// controller-runtime iterates ByObject entries at cache init
-	// time and calls apiutil.IsObjectNamespaced for each, which
-	// fails if the CRD is not registered in the API server.
-	// See: https://github.com/kubernetes-sigs/controller-runtime/issues/2456
 	cacheOptions := cache.Options{
 		ByObject: map[client.Object]cache.ByObject{
 			&v1.ConfigMap{}: {
@@ -341,6 +354,29 @@ func getCacheOptions(apiClient client.Client) cache.Options {
 				}.AsSelector(),
 			},
 		},
+	}
+
+	// Add MigController to cache if the CRD exists.
+	// We check by trying to list resources - IsNoMatchError indicates CRD doesn't exist.
+	// If the CRD doesn't exist, the TLS watcher will gracefully use default config.
+	crdExists, err := checkMigControllerCRDExists(context.TODO(), apiClient, ns)
+	if err != nil {
+		// Other errors (RBAC for listing, network, etc.) are unexpected
+		setupLog.Error(err, "Failed to check for MigController CRD existence")
+		os.Exit(1)
+	}
+
+	if crdExists {
+		// CRD exists, add MigController to cache with namespace scope
+		cacheOptions.ByObject[&migrationsv1alpha1.MigController{}] = cache.ByObject{
+			Namespaces: map[string]cache.Config{
+				ns: {},
+			},
+		}
+		setupLog.Info("MigController CRD found, configuring namespace-scoped cache")
+	} else {
+		// CRD doesn't exist - this is expected in cluster-sync mode
+		setupLog.Info("MigController CRD not found, will use default TLS configuration")
 	}
 
 	cacheOptionsByObjectForOpenshift := map[client.Object]cache.ByObject{
