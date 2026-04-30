@@ -54,9 +54,9 @@ type VirtualMachineStorageMigrationPlanSpec struct {
 
 // VirtualMachineStorageMigrationPlanVirtualMachine defines the VirtualMachine to migrate and the PVCs to migrate.
 type VirtualMachineStorageMigrationPlanVirtualMachine struct {
-	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:Pattern=`^[a-z]([-a-z0-9]*[a-z0-9])?$`
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
 	// The name of the virtual machine to migrate.
 	Name string `json:"name"`
 	// A list of PVCs associated with the VirtualMachine to migrate.
@@ -100,7 +100,7 @@ type VirtualMachineStorageMigrationPlanDestinationPVC struct {
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:Pattern=`^[a-z]([-a-z0-9]*[a-z0-9])?$`
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	// The name of the destination PVC. If not provided, the PVC will be named after the source PVC with a "-mig-xxxx" suffix.
 	Name *string `json:"name,omitempty"`
 	// +kubebuilder:validation:Optional
