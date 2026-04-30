@@ -1,0 +1,38 @@
+# This rule is not used by the project kubevirt-migration-controller itself.
+# It is provided to allow the cluster admin to help manage permissions for users.
+#
+# Grants read-only access to all migrations.kubevirt.io resources.
+# This role is intended for users who need visibility into these resources
+# without permissions to modify them. It is ideal for monitoring purposes and limited-access viewing.
+#
+# This role aggregates into the standard "view" ClusterRole.
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: kubevirt-migration-controller
+    app.kubernetes.io/managed-by: kustomize
+    rbac.authorization.k8s.io/aggregate-to-view: "true"
+  name: migrations-viewer-role
+rules:
+- apiGroups:
+  - migrations.kubevirt.io
+  resources:
+  - virtualmachinestoragemigrationplans
+  - virtualmachinestoragemigrations
+  - multinamespacevirtualmachinestoragemigrationplans
+  - multinamespacevirtualmachinestoragemigrations
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - migrations.kubevirt.io
+  resources:
+  - virtualmachinestoragemigrationplans/status
+  - virtualmachinestoragemigrations/status
+  - multinamespacevirtualmachinestoragemigrationplans/status
+  - multinamespacevirtualmachinestoragemigrations/status
+  verbs:
+  - get
