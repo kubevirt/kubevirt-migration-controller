@@ -329,6 +329,15 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				Entry("source pvc with new suffix", "test-pvc-new", "", "test-pvc-mig-abcd"),
 				Entry("source pvc with xyzd suffix", "test-pvc-mig-xyzd", "", "test-pvc-mig-abcd"),
 				Entry("source pvc name exceeding max length", strings.Repeat("a", 60), "", strings.Repeat("a", 45)+"-92b9e111-mig-abcd"),
+				Entry("source pvc name starts with number", "123-pvc", "", "123-pvc-mig-abcd"),
+				Entry("source pvc name ends with number", "pvc-123", "", "pvc-123-mig-abcd"),
+				Entry("source pvc name all numbers with hyphens", "123-456", "", "123-456-mig-abcd"),
+				Entry("source pvc name starts and ends with number", "1-pvc-9", "", "1-pvc-9-mig-abcd"),
+				Entry("source pvc single character letter", "a", "", "a-mig-abcd"),
+				Entry("source pvc single character number", "1", "", "1-mig-abcd"),
+				Entry("source pvc starts with number and has mig suffix", "123-pvc-mig-efgh", "", "123-pvc-mig-abcd"),
+				Entry("target pvc name with dots (subdomain)", originalPVCName, "pvc.storage.namespace", "pvc.storage.namespace"),
+				Entry("target pvc name exactly max length (253 chars)", originalPVCName, strings.Repeat("a", 253), strings.Repeat("a", 253)),
 			)
 
 			DescribeTable("should return an error if the target pvc is invalid", func(targetPVCDef func() *migrations.VirtualMachineStorageMigrationPlanDestinationPVC, expectType string, expectMessage string) {
@@ -378,6 +387,79 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 
 					return &migrations.VirtualMachineStorageMigrationPlanDestinationPVC{}
 				}, InvalidPVCsType, "no default storage class found"),
+			)
+
+			DescribeTable("should reject invalid destination PVC names at API level", func(invalidName string) {
+				By("creating a VM and source PVC")
+				vm := testutils.NewVirtualMachine("test-vm", testutils.TestNamespace, "test-volume", originalPVCName)
+				Expect(reconciler.Client.Create(ctx, vm)).To(Succeed())
+				sourcePVC := testutils.NewPersistentVolumeClaim(originalPVCName, vm.Namespace)
+				Expect(reconciler.Client.Create(ctx, sourcePVC)).To(Succeed())
+				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName, testutils.NewVirtualMachine(testVMName, testutils.TestNamespace, testVolumeName, originalPVCName))
+				migPlan.Spec.VirtualMachines[0].TargetMigrationPVCs[0].DestinationPVC.Name = ptr.To(invalidName)
+
+				By("expecting API validation to reject the invalid name")
+				err := reconciler.Client.Create(ctx, migPlan)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("Invalid value"))
+			},
+				Entry("empty string (0 length)", ""),
+				Entry("uppercase letters", "Invalid-PVC"),
+				Entry("starts with hyphen", "-invalid"),
+				Entry("ends with hyphen", "invalid-"),
+				Entry("starts with dot", ".invalid"),
+				Entry("ends with dot", "invalid."),
+				Entry("double dot", "invalid..pvc"),
+				Entry("contains underscore", "invalid_pvc"),
+				Entry("contains space", "invalid pvc"),
+				Entry("all uppercase", "INVALIDPVC"),
+				Entry("exceeds max length (254 chars)", strings.Repeat("a", 254)),
+			)
+
+			DescribeTable("should accept valid VM names following DNS subdomain rules", func(vmName string) {
+				By("creating a VM and source PVC with the given name")
+				vm := testutils.NewVirtualMachine(vmName, testutils.TestNamespace, "test-volume", originalPVCName)
+				Expect(reconciler.Client.Create(ctx, vm)).To(Succeed())
+				sourcePVC := testutils.NewPersistentVolumeClaim(originalPVCName, vm.Namespace)
+				Expect(reconciler.Client.Create(ctx, sourcePVC)).To(Succeed())
+				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName, testutils.NewVirtualMachine(vmName, testutils.TestNamespace, testVolumeName, originalPVCName))
+
+				By("expecting API validation to accept the valid VM name")
+				err := reconciler.Client.Create(ctx, migPlan)
+				Expect(err).NotTo(HaveOccurred())
+			},
+				Entry("simple name", "my-vm"),
+				Entry("with dots (subdomain)", "my.vm.name"),
+				Entry("starts with number", "123-vm"),
+				Entry("starts with number and dots", "123.my.vm"),
+				Entry("multiple segments", "app.namespace.cluster.local"),
+				Entry("single character", "a"),
+				Entry("long subdomain", "very.long.subdomain.name.for.virtual.machine"),
+				Entry("exactly max length (253 chars)", strings.Repeat("a", 253)),
+			)
+
+			DescribeTable("should reject invalid VM names at API level", func(invalidVMName string) {
+				By("creating a VM and source PVC")
+				vm := testutils.NewVirtualMachine("valid-vm", testutils.TestNamespace, "test-volume", originalPVCName)
+				Expect(reconciler.Client.Create(ctx, vm)).To(Succeed())
+				sourcePVC := testutils.NewPersistentVolumeClaim(originalPVCName, vm.Namespace)
+				Expect(reconciler.Client.Create(ctx, sourcePVC)).To(Succeed())
+				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName, testutils.NewVirtualMachine(invalidVMName, testutils.TestNamespace, testVolumeName, originalPVCName))
+
+				By("expecting API validation to reject the invalid VM name")
+				err := reconciler.Client.Create(ctx, migPlan)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("Invalid value"))
+			},
+				Entry("empty string (0 length)", ""),
+				Entry("uppercase letters", "Invalid-VM"),
+				Entry("starts with hyphen", "-invalid"),
+				Entry("ends with hyphen", "invalid-"),
+				Entry("starts with dot", ".invalid"),
+				Entry("ends with dot", "invalid."),
+				Entry("double dot", "invalid..vm"),
+				Entry("contains underscore", "invalid_vm"),
+				Entry("exceeds max length (254 chars)", strings.Repeat("a", 254)),
 			)
 
 			DescribeTable("properly set conditions based on the migration plan and status of VMs", func(vmDef func() []*virtv1.VirtualMachine, expectMessage string, expectReadyStatus corev1.ConditionStatus) {
