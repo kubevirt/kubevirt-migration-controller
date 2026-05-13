@@ -4,8 +4,6 @@ go 1.24.0
 
 toolchain go1.24.10
 
-godebug default=go1.23
-
 require (
 	github.com/go-logr/logr v1.4.3
 	github.com/google/goexpect v0.0.0-20190425035906-112704a48083

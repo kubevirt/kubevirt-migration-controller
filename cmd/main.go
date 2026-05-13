@@ -135,7 +135,10 @@ func main() {
 			if managedTLSWatcher != nil {
 				ctx := t.Context()
 				cc := managedTLSWatcher.GetTLSConfig(ctx)
-				config.CipherSuites = cc.CipherSuites
+				config.MinVersion = cc.MinVersion
+				if cc.MinVersion < tls.VersionTLS13 {
+					config.CipherSuites = cc.CipherSuites
+				}
 				config.MinVersion = cc.MinVersion
 			}
 			return config, nil
