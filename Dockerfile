@@ -1,7 +1,7 @@
 # Build the manager binary
 # Force building go binaries on amd64 with cross compilation, avoid emulation
 # Target distroless remains unaffected
-FROM --platform=linux/amd64 quay.io/konveyor/builder:v1.23.6 AS builder
+FROM --platform=linux/amd64 quay.io/konveyor/builder:v1.24.3 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 RUN mkdir -p /gopath
