@@ -660,6 +660,293 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				Expect(updated.Status.Conditions.List).NotTo(ContainElement(HaveField("Type", FilesystemPVCsWithoutKubeVirtContentTypeType)))
 			})
 		})
+
+		Context("Source PVC preservation across reconciles", func() {
+			It("should preserve source PVCs when re-validating after migration completion", func() {
+				By("Creating KubeVirt with storage live migration enabled")
+				rolloutStrategy := virtv1.VMRolloutStrategyLiveUpdate
+				kv := &virtv1.KubeVirt{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "kubevirt",
+						Namespace: testutils.TestNamespace,
+					},
+					Spec: virtv1.KubeVirtSpec{
+						Configuration: virtv1.KubeVirtConfiguration{
+							VMRolloutStrategy: &rolloutStrategy,
+							DeveloperConfiguration: &virtv1.DeveloperConfiguration{
+								FeatureGates: []string{"VolumesUpdateStrategy", "VolumeMigration", "VMLiveUpdateFeatures"},
+							},
+						},
+					},
+					Status: virtv1.KubeVirtStatus{
+						Phase:           virtv1.KubeVirtPhaseDeployed,
+						OperatorVersion: "v1.3.0",
+						Conditions: []virtv1.KubeVirtCondition{
+							{
+								Type:   virtv1.KubeVirtConditionAvailable,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				}
+				createKubeVirt(ctx, reconciler.Client, kv)
+
+				By("Creating a VM with two volumes using original PVCs")
+				originalRootPVC := "vm-root-original"
+				originalDataPVC := "vm-data-original"
+				vm := &virtv1.VirtualMachine{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-vm",
+						Namespace: testutils.TestNamespace,
+					},
+					Spec: virtv1.VirtualMachineSpec{
+						Template: &virtv1.VirtualMachineInstanceTemplateSpec{
+							Spec: virtv1.VirtualMachineInstanceSpec{
+								Volumes: []virtv1.Volume{
+									{
+										Name: "rootdisk",
+										VolumeSource: virtv1.VolumeSource{
+											PersistentVolumeClaim: &virtv1.PersistentVolumeClaimVolumeSource{
+												PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+													ClaimName: originalRootPVC,
+												},
+											},
+										},
+									},
+									{
+										Name: "datadisk",
+										VolumeSource: virtv1.VolumeSource{
+											PersistentVolumeClaim: &virtv1.PersistentVolumeClaimVolumeSource{
+												PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{
+													ClaimName: originalDataPVC,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					Status: virtv1.VirtualMachineStatus{
+						Ready: true,
+						Conditions: []virtv1.VirtualMachineCondition{
+							{
+								Type:   componenthelpers.StorageLiveMigratable,
+								Status: corev1.ConditionTrue,
+							},
+						},
+					},
+				}
+				Expect(reconciler.Client.Create(ctx, vm)).To(Succeed())
+
+				By("Creating original PVCs")
+				rootPVC := testutils.NewPersistentVolumeClaim(originalRootPVC, testutils.TestNamespace)
+				Expect(reconciler.Client.Create(ctx, rootPVC)).To(Succeed())
+				dataPVC := testutils.NewPersistentVolumeClaim(originalDataPVC, testutils.TestNamespace)
+				Expect(reconciler.Client.Create(ctx, dataPVC)).To(Succeed())
+
+				By("Creating target storage class")
+				targetStorageClass := testutils.NewDefaultStorageClass("new-storage-class")
+				Expect(reconciler.Client.Create(ctx, targetStorageClass)).To(Succeed())
+
+				By("Creating a migration plan")
+				plan := &migrations.VirtualMachineStorageMigrationPlan{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-plan",
+						Namespace: testutils.TestNamespace,
+					},
+					Spec: migrations.VirtualMachineStorageMigrationPlanSpec{
+						VirtualMachines: []migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+							{
+								Name: "test-vm",
+								TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+									{
+										VolumeName: "rootdisk",
+										DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+											StorageClassName: ptr.To("new-storage-class"),
+										},
+									},
+									{
+										VolumeName: "datadisk",
+										DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+											StorageClassName: ptr.To("new-storage-class"),
+										},
+									},
+								},
+							},
+						},
+					},
+				}
+				Expect(reconciler.Client.Create(ctx, plan)).To(Succeed())
+
+				By("First reconcile - plan should identify original PVCs as sources")
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: "test-plan", Namespace: testutils.TestNamespace},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying initial source PVCs are correct")
+				updatedPlan := &migrations.VirtualMachineStorageMigrationPlan{}
+				Expect(reconciler.Client.Get(ctx, types.NamespacedName{Name: "test-plan", Namespace: testutils.TestNamespace}, updatedPlan)).To(Succeed())
+				Expect(updatedPlan.Status.ReadyMigrations).To(HaveLen(1))
+				Expect(updatedPlan.Status.ReadyMigrations[0].SourcePVCs).To(HaveLen(2))
+
+				// Verify original sources are recorded
+				sourceNames := []string{
+					updatedPlan.Status.ReadyMigrations[0].SourcePVCs[0].Name,
+					updatedPlan.Status.ReadyMigrations[0].SourcePVCs[1].Name,
+				}
+				Expect(sourceNames).To(ContainElements(originalRootPVC, originalDataPVC))
+
+				// Get target names from plan
+				targetRootPVC := *updatedPlan.Status.ReadyMigrations[0].TargetMigrationPVCs[0].DestinationPVC.Name
+				targetDataPVC := *updatedPlan.Status.ReadyMigrations[0].TargetMigrationPVCs[1].DestinationPVC.Name
+
+				By("Creating target PVCs (simulating migration creating them)")
+				targetRoot := testutils.NewPersistentVolumeClaim(targetRootPVC, testutils.TestNamespace)
+				Expect(reconciler.Client.Create(ctx, targetRoot)).To(Succeed())
+				targetData := testutils.NewPersistentVolumeClaim(targetDataPVC, testutils.TestNamespace)
+				Expect(reconciler.Client.Create(ctx, targetData)).To(Succeed())
+
+				By("Simulating migration completion - VM spec now uses target PVCs")
+				// This simulates what the migration controller does when it swaps the VM to use new PVCs
+				vm.Spec.Template.Spec.Volumes[0].VolumeSource.PersistentVolumeClaim.ClaimName = targetRootPVC
+				vm.Spec.Template.Spec.Volumes[1].VolumeSource.PersistentVolumeClaim.ClaimName = targetDataPVC
+				Expect(reconciler.Client.Update(ctx, vm)).To(Succeed())
+
+				By("Second reconcile - simulating plan re-validation after migration completes")
+				// This is where the bug occurs: plan validation clears status lists, then re-computes source PVCs
+				// Because VM spec now has target PVCs, it incorrectly identifies them as "sources"
+				_, err = reconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: "test-plan", Namespace: testutils.TestNamespace},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("CRITICAL: Verifying source PVCs are preserved (not swapped with targets)")
+				finalPlan := &migrations.VirtualMachineStorageMigrationPlan{}
+				Expect(reconciler.Client.Get(ctx, types.NamespacedName{Name: "test-plan", Namespace: testutils.TestNamespace}, finalPlan)).To(Succeed())
+
+				// After re-validation, source PVCs should STILL be the original ones, not the targets
+				// BUG: Currently the code re-computes sources from the swapped VM spec, so it records targets as sources
+				if len(finalPlan.Status.ReadyMigrations) > 0 {
+					finalSourceNames := []string{
+						finalPlan.Status.ReadyMigrations[0].SourcePVCs[0].Name,
+						finalPlan.Status.ReadyMigrations[0].SourcePVCs[1].Name,
+					}
+
+					// This is what SHOULD happen (test will fail until bug is fixed)
+					Expect(finalSourceNames).To(ContainElements(originalRootPVC, originalDataPVC),
+						"Source PVCs should remain as original PVCs (%s, %s), not be swapped to targets (%s, %s)",
+						originalRootPVC, originalDataPVC, targetRootPVC, targetDataPVC)
+
+					// Verify targets didn't become sources
+					Expect(finalSourceNames).NotTo(ContainElement(targetRootPVC),
+						"Target PVC %s should NOT be recorded as a source", targetRootPVC)
+					Expect(finalSourceNames).NotTo(ContainElement(targetDataPVC),
+						"Target PVC %s should NOT be recorded as a source", targetDataPVC)
+				} else if len(finalPlan.Status.CompletedMigrations) > 0 {
+					// If it moved to completed, check there
+					finalSourceNames := []string{
+						finalPlan.Status.CompletedMigrations[0].SourcePVCs[0].Name,
+						finalPlan.Status.CompletedMigrations[0].SourcePVCs[1].Name,
+					}
+
+					Expect(finalSourceNames).To(ContainElements(originalRootPVC, originalDataPVC),
+						"Source PVCs in completed migrations should be original PVCs, not targets")
+					Expect(finalSourceNames).NotTo(ContainElement(targetRootPVC))
+					Expect(finalSourceNames).NotTo(ContainElement(targetDataPVC))
+				}
+			})
+
+			Context("hasVMBeenSwapped detection", func() {
+				var reconciler *StorageMigPlanReconciler
+
+				BeforeEach(func() {
+					reconciler = &StorageMigPlanReconciler{
+						Client:        k8sClient,
+						Scheme:        scheme.Scheme,
+						EventRecorder: record.NewFakeRecorder(10),
+						Log:           logf.Log,
+					}
+				})
+
+				AfterEach(func() {
+					if reconciler != nil {
+						close(reconciler.EventRecorder.(*record.FakeRecorder).Events)
+						reconciler = nil
+					}
+				})
+
+				DescribeTable("detects VM swap state correctly",
+					func(originalSources, newSources []migrations.VirtualMachineStorageMigrationPlanSourcePVC, expectedSwapped bool) {
+						result := reconciler.hasVMBeenSwapped(originalSources, newSources)
+						Expect(result).To(Equal(expectedSwapped))
+					},
+					Entry("no swap - PVCs match exactly",
+						[]migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+							{VolumeName: "rootdisk", Name: "original-root"},
+							{VolumeName: "datadisk", Name: "original-data"},
+						},
+						[]migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+							{VolumeName: "rootdisk", Name: "original-root"},
+							{VolumeName: "datadisk", Name: "original-data"},
+						},
+						false,
+					),
+					Entry("swap detected - PVC names differ",
+						[]migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+							{VolumeName: "rootdisk", Name: "original-root"},
+							{VolumeName: "datadisk", Name: "original-data"},
+						},
+						[]migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+							{VolumeName: "rootdisk", Name: "target-root-abc"},
+							{VolumeName: "datadisk", Name: "target-data-abc"},
+						},
+						true,
+					),
+					Entry("swap detected - volume count changed",
+						[]migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+							{VolumeName: "rootdisk", Name: "original-root"},
+						},
+						[]migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+							{VolumeName: "rootdisk", Name: "original-root"},
+							{VolumeName: "datadisk", Name: "original-data"},
+						},
+						true,
+					),
+					Entry("swap detected - partial swap (one volume changed)",
+						[]migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+							{VolumeName: "rootdisk", Name: "original-root"},
+							{VolumeName: "datadisk", Name: "original-data"},
+						},
+						[]migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+							{VolumeName: "rootdisk", Name: "target-root-abc"},
+							{VolumeName: "datadisk", Name: "original-data"},
+						},
+						true,
+					),
+					Entry("swap detected - volume names differ",
+						[]migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+							{VolumeName: "rootdisk", Name: "original-root"},
+						},
+						[]migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+							{VolumeName: "datadisk", Name: "original-data"},
+						},
+						true,
+					),
+					Entry("no swap - both empty",
+						[]migrations.VirtualMachineStorageMigrationPlanSourcePVC{},
+						[]migrations.VirtualMachineStorageMigrationPlanSourcePVC{},
+						false,
+					),
+					Entry("no swap - both nil",
+						nil,
+						nil,
+						false,
+					),
+				)
+			})
+		})
 	})
 })
 
