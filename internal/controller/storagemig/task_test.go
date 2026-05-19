@@ -812,5 +812,35 @@ var _ = Describe("StorageMigration tasks", func() {
 			Expect(task.deleteSourceDataVolumesAndPVCs(ctx, []string{"any-vm"})).To(Succeed())
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "pvc-orphan", Namespace: testutils.TestNamespace}, &corev1.PersistentVolumeClaim{})).To(Succeed())
 		})
+
+		It("returns error and sets requeue when completedMigrations is non-empty but no source PVCs found", func() {
+			By("creating a plan with no CompletedMigrations but migration has completed VMs")
+			plan := &migrations.VirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: "plan-no-completed", Namespace: testutils.TestNamespace},
+				Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+					InProgressMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-stuck-in-progress"},
+							SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+								{Name: "pvc-stuck", Namespace: testutils.TestNamespace},
+							},
+						},
+					},
+					CompletedMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{},
+				},
+			}
+			task := &Task{
+				Plan:    plan,
+				Client:  controllerReconciler.Client,
+				Log:     logf.Log.WithName("test"),
+				Requeue: NoReQ,
+			}
+
+			By("calling deleteSourceDataVolumesAndPVCs with a VM that's not yet in plan.Status.CompletedMigrations")
+			err := task.deleteSourceDataVolumesAndPVCs(ctx, []string{"vm-stuck-in-progress"})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("source PVCs not yet available"))
+			Expect(task.Requeue).To(Equal(PollReQ), "should set requeue to retry later")
+		})
 	})
 })

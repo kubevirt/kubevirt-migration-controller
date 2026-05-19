@@ -94,4 +94,190 @@ var _ = Describe("StorageMigPlan Controller envtests - with minimal real apiserv
 			Expect(err).NotTo(HaveOccurred())
 		})
 	})
+
+	DescribeTable("updateReadyCompletedMigrations",
+		func(
+			readyMigrations []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine,
+			inProgressMigrations []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine,
+			existingCompletedMigrations []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine,
+			completedVMNames []string,
+			expectedReadyCount int,
+			expectedInProgressCount int,
+			expectedCompletedCount int,
+			expectedCompletedNames []string,
+		) {
+			plan := &migrations.VirtualMachineStorageMigrationPlan{
+				Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+					ReadyMigrations:      readyMigrations,
+					InProgressMigrations: inProgressMigrations,
+					CompletedMigrations:  existingCompletedMigrations,
+				},
+			}
+
+			lastMigration := migrations.VirtualMachineStorageMigration{
+				Status: migrations.VirtualMachineStorageMigrationStatus{
+					CompletedMigrations: completedVMNames,
+				},
+			}
+
+			err := reconciler.updateReadyCompletedMigrations(plan, lastMigration)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(plan.Status.ReadyMigrations).To(HaveLen(expectedReadyCount))
+			Expect(plan.Status.InProgressMigrations).To(HaveLen(expectedInProgressCount))
+			Expect(plan.Status.CompletedMigrations).To(HaveLen(expectedCompletedCount))
+
+			if len(expectedCompletedNames) > 0 {
+				completedNames := make([]string, len(plan.Status.CompletedMigrations))
+				for i, vm := range plan.Status.CompletedMigrations {
+					completedNames[i] = vm.Name
+					// Verify SourcePVCs are preserved when VMs move to CompletedMigrations
+					if vm.Name == "vm-multidisk" {
+						Expect(vm.SourcePVCs).To(HaveLen(2))
+					}
+				}
+				for _, expectedName := range expectedCompletedNames {
+					Expect(completedNames).To(ContainElement(expectedName))
+				}
+			}
+		},
+		Entry("moves completed VMs from ReadyMigrations to CompletedMigrations",
+			[]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+				{
+					VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-1"},
+					SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+						{Name: "pvc-1", Namespace: testutils.TestNamespace},
+					},
+				},
+				{
+					VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-2"},
+					SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+						{Name: "pvc-2", Namespace: testutils.TestNamespace},
+					},
+				},
+			},
+			nil, // no inProgress
+			nil, // no existing completed
+			[]string{"vm-1"},
+			1, // expectedReadyCount
+			0, // expectedInProgressCount
+			1, // expectedCompletedCount
+			[]string{"vm-1"},
+		),
+		Entry("moves completed VMs from InProgressMigrations to CompletedMigrations",
+			nil, // no ready
+			[]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+				{
+					VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-active"},
+					SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+						{Name: "pvc-active", Namespace: testutils.TestNamespace},
+					},
+				},
+				{
+					VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-running"},
+					SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+						{Name: "pvc-running", Namespace: testutils.TestNamespace},
+					},
+				},
+			},
+			nil, // no existing completed
+			[]string{"vm-active"},
+			0, // expectedReadyCount
+			1, // expectedInProgressCount
+			1, // expectedCompletedCount
+			[]string{"vm-active"},
+		),
+		Entry("moves completed VMs from both ReadyMigrations and InProgressMigrations",
+			[]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+				{
+					VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-ready-1"},
+					SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+						{Name: "pvc-ready-1", Namespace: testutils.TestNamespace},
+					},
+				},
+				{
+					VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-ready-2"},
+					SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+						{Name: "pvc-ready-2", Namespace: testutils.TestNamespace},
+					},
+				},
+			},
+			[]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+				{
+					VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-active-1"},
+					SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+						{Name: "pvc-active-1", Namespace: testutils.TestNamespace},
+					},
+				},
+				{
+					VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-active-2"},
+					SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+						{Name: "pvc-active-2", Namespace: testutils.TestNamespace},
+					},
+				},
+			},
+			nil, // no existing completed
+			[]string{"vm-ready-1", "vm-active-2"},
+			1, // expectedReadyCount
+			1, // expectedInProgressCount
+			2, // expectedCompletedCount
+			[]string{"vm-ready-1", "vm-active-2"},
+		),
+		Entry("preserves existing CompletedMigrations when adding new ones",
+			[]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+				{
+					VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-new"},
+					SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+						{Name: "pvc-new", Namespace: testutils.TestNamespace},
+					},
+				},
+			},
+			nil, // no inProgress
+			[]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+				{
+					VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-old"},
+					SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+						{Name: "pvc-old", Namespace: testutils.TestNamespace},
+					},
+				},
+			},
+			[]string{"vm-new"},
+			0, // expectedReadyCount
+			0, // expectedInProgressCount
+			2, // expectedCompletedCount
+			[]string{"vm-old", "vm-new"},
+		),
+		Entry("handles empty CompletedMigrations in lastMigration",
+			[]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+				{VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-1"}},
+			},
+			[]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+				{VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-2"}},
+			},
+			nil, // no existing completed
+			[]string{},
+			1, // expectedReadyCount
+			1, // expectedInProgressCount
+			0, // expectedCompletedCount
+			[]string{},
+		),
+		Entry("preserves SourcePVCs when moving VMs to CompletedMigrations",
+			nil, // no ready
+			[]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+				{
+					VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-multidisk"},
+					SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+						{Name: "pvc-boot", Namespace: testutils.TestNamespace, VolumeName: "rootdisk"},
+						{Name: "pvc-data", Namespace: testutils.TestNamespace, VolumeName: "datadisk"},
+					},
+				},
+			},
+			nil, // no existing completed
+			[]string{"vm-multidisk"},
+			0, // expectedReadyCount
+			0, // expectedInProgressCount
+			1, // expectedCompletedCount
+			[]string{"vm-multidisk"},
+		),
+	)
 })
