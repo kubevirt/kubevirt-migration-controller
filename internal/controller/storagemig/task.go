@@ -17,6 +17,7 @@ package storagemig
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -106,14 +107,14 @@ func (t *Task) Run(ctx context.Context) error {
 			return err
 		}
 	case migrations.CleanupMigrationResources:
-		log.V(5).Info("Processing CleanupMigrationResources phase")
+		log.V(3).Info("Processing CleanupMigrationResources phase")
 		if allCleaned, err := t.cleanupMigrationResources(ctx, t.Owner.Status.CompletedMigrations); err != nil {
 			return err
 		} else if !allCleaned {
 			t.Requeue = PollReQ
 		} else {
 			if t.Plan != nil && t.Plan.Spec.RetentionPolicy != nil && *t.Plan.Spec.RetentionPolicy == migrations.RetentionPolicyDeleteSource {
-				log.V(5).Info("Deleting source DataVolume and PVCs due to retentionPolicy deleteSource")
+				log.V(3).Info("Deleting source DataVolume and PVCs due to retentionPolicy deleteSource")
 				if err := t.deleteSourceDataVolumesAndPVCs(ctx, t.Owner.Status.CompletedMigrations); err != nil {
 					return err
 				}
@@ -365,6 +366,18 @@ func (t *Task) deleteSourceDataVolumesAndPVCs(ctx context.Context, completedMigr
 		return nil
 	}
 	sourcePVCs := t.getSourcePVCsForCompletedMigrations(completedMigrationsVMNames)
+	t.Log.V(3).Info("Deleting source DataVolume and PVCs", "sourcePVCs", sourcePVCs)
+
+	// If we have completed migrations but no source PVCs, the plan controller may not have updated yet.
+	// Requeue to give it time to move VMs from InProgress/Ready to Completed.
+	if len(completedMigrationsVMNames) > 0 && len(sourcePVCs) == 0 {
+		t.Log.Info("WARNING: retentionPolicy is deleteSource but no source PVCs found for completed migrations",
+			"completedMigrations", completedMigrationsVMNames,
+			"planCompletedCount", len(t.Plan.Status.CompletedMigrations))
+		t.Requeue = PollReQ
+		return fmt.Errorf("source PVCs not yet available in plan status for %d completed migrations", len(completedMigrationsVMNames))
+	}
+
 	// Deduplicate by namespace/name
 	seen := make(map[string]struct{})
 	for _, sourcePVC := range sourcePVCs {
@@ -381,19 +394,19 @@ func (t *Task) deleteSourceDataVolumesAndPVCs(ctx context.Context, completedMigr
 				Namespace: sourcePVC.Namespace,
 			},
 		}
-		t.Log.V(5).Info("deleting DataVolume", "name", dv.Name, "namespace", dv.Namespace)
+		t.Log.V(3).Info("deleting DataVolume", "name", dv.Name, "namespace", dv.Namespace)
 		if err := t.Client.Delete(ctx, dv); err != nil {
 			if !k8serrors.IsNotFound(err) {
 				return err
 			}
-			t.Log.V(5).Info("DataVolume not found", "name", dv.Name, "namespace", dv.Namespace)
+			t.Log.V(3).Info("DataVolume not found", "name", dv.Name, "namespace", dv.Namespace)
 			// DataVolume not found, fall through to delete PVC
 		} else {
-			t.Log.V(5).Info("Deleted source DataVolume", "name", sourcePVC.Name, "namespace", sourcePVC.Namespace)
+			t.Log.V(3).Info("Deleted source DataVolume", "name", sourcePVC.Name, "namespace", sourcePVC.Namespace)
 			continue
 		}
 
-		t.Log.V(5).Info("deleting PVC", "name", sourcePVC.Name, "namespace", sourcePVC.Namespace)
+		t.Log.V(3).Info("deleting PVC", "name", sourcePVC.Name, "namespace", sourcePVC.Namespace)
 		// No DataVolume or it was already deleted; delete the source PVC.
 		pvc := &corev1.PersistentVolumeClaim{
 			ObjectMeta: metav1.ObjectMeta{
@@ -406,7 +419,7 @@ func (t *Task) deleteSourceDataVolumesAndPVCs(ctx context.Context, completedMigr
 				return err
 			}
 		} else {
-			t.Log.V(5).Info("Deleted source PVC", "name", sourcePVC.Name, "namespace", sourcePVC.Namespace)
+			t.Log.V(3).Info("Deleted source PVC", "name", sourcePVC.Name, "namespace", sourcePVC.Namespace)
 		}
 	}
 	return nil

@@ -42,6 +42,72 @@ import (
 	"kubevirt.io/kubevirt-migration-controller/test/utils/matcher"
 )
 
+// copyProxyCAHelper copies the registry proxy CA to the test namespace
+func copyProxyCAHelper(namespace string) {
+	By("Copying proxy CA to test namespace")
+	ca := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: registryProxyCACertName, Namespace: *registryProxyNamespace},
+	}
+	err := c.Get(context.TODO(), client.ObjectKeyFromObject(ca), ca, &client.GetOptions{})
+	Expect(err).NotTo(HaveOccurred())
+	newCa := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: registryProxyCACertName, Namespace: namespace},
+		Data:       ca.Data,
+	}
+	err = c.Create(context.TODO(), newCa, &client.CreateOptions{})
+	Expect(err).NotTo(HaveOccurred())
+	By("Waiting for proxy CA to be copied to test namespace")
+	Eventually(func() bool {
+		ca := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: registryProxyCACertName, Namespace: namespace},
+		}
+		err := c.Get(context.TODO(), client.ObjectKeyFromObject(ca), ca, &client.GetOptions{})
+		return err == nil
+	}, 10*time.Second, 1*time.Second).Should(BeTrue())
+}
+
+// setupNamespaceAndStorageClassHelper creates a test namespace and resolves the default storage class
+func setupNamespaceAndStorageClassHelper(namespacePrefix string) (*corev1.Namespace, string) {
+	namespaceName := namespacePrefix + rand.String(6)
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{Name: namespaceName},
+	}
+	By("Creating test namespace " + ns.Name)
+	err := c.Create(context.TODO(), ns, &client.CreateOptions{})
+	Expect(err).NotTo(HaveOccurred())
+
+	By("Resolving default storage class")
+	scList := &storagev1.StorageClassList{}
+	err = c.List(context.TODO(), scList, &client.ListOptions{})
+	Expect(err).NotTo(HaveOccurred())
+	var sc string
+	for i := range scList.Items {
+		if scList.Items[i].Annotations["storageclass.kubernetes.io/is-default-class"] == "true" {
+			sc = scList.Items[i].Name
+			break
+		}
+	}
+	if sc == "" && len(scList.Items) > 0 {
+		sc = scList.Items[0].Name
+	}
+	Expect(sc).NotTo(BeEmpty(), "cluster must have at least one storage class")
+	copyProxyCAHelper(ns.Name)
+	return ns, sc
+}
+
+// cleanupNamespaceHelper deletes the test namespace
+func cleanupNamespaceHelper(ns *corev1.Namespace) {
+	By("Deleting test namespace")
+	Eventually(func() bool {
+		err := c.Delete(context.TODO(), ns, &client.DeleteOptions{})
+		if k8serrors.IsNotFound(err) {
+			return true
+		}
+		Expect(err).NotTo(HaveOccurred())
+		return false
+	}, 60*time.Second, 2*time.Second).Should(BeTrue())
+}
+
 var _ = Describe("MigPlan", func() {
 	var (
 		namespace *corev1.Namespace
@@ -268,53 +334,8 @@ var _ = Describe("MigPlan", func() {
 			storageClassName string
 		)
 
-		copyProxyCA := func(namespace string) {
-			By("Copying proxy CA to test namespace")
-			ca := &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: registryProxyCACertName, Namespace: *registryProxyNamespace},
-			}
-			err := c.Get(context.TODO(), client.ObjectKeyFromObject(ca), ca, &client.GetOptions{})
-			Expect(err).NotTo(HaveOccurred())
-			newCa := &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{Name: registryProxyCACertName, Namespace: namespace},
-				Data:       ca.Data,
-			}
-			err = c.Create(context.TODO(), newCa, &client.CreateOptions{})
-			Expect(err).NotTo(HaveOccurred())
-			By("Waiting for proxy CA to be copied to test namespace")
-			Eventually(func() bool {
-				ca := &corev1.ConfigMap{
-					ObjectMeta: metav1.ObjectMeta{Name: registryProxyCACertName, Namespace: namespace},
-				}
-				err := c.Get(context.TODO(), client.ObjectKeyFromObject(ca), ca, &client.GetOptions{})
-				return err == nil
-			}, 10*time.Second, 1*time.Second).Should(BeTrue())
-		}
-
 		BeforeEach(func() {
-			namespaceName := "e2e-storage-mig-" + rand.String(6)
-			namespace = &corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{Name: namespaceName},
-			}
-			By("Creating test namespace " + namespace.Name)
-			err := c.Create(context.TODO(), namespace, &client.CreateOptions{})
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Resolving default storage class")
-			scList := &storagev1.StorageClassList{}
-			err = c.List(context.TODO(), scList, &client.ListOptions{})
-			Expect(err).NotTo(HaveOccurred())
-			for i := range scList.Items {
-				if scList.Items[i].Annotations["storageclass.kubernetes.io/is-default-class"] == "true" {
-					storageClassName = scList.Items[i].Name
-					break
-				}
-			}
-			if storageClassName == "" && len(scList.Items) > 0 {
-				storageClassName = scList.Items[0].Name
-			}
-			Expect(storageClassName).NotTo(BeEmpty(), "cluster must have at least one storage class")
-			copyProxyCA(namespace.Name)
+			namespace, storageClassName = setupNamespaceAndStorageClassHelper("e2e-storage-mig-")
 		})
 
 		AfterEach(func() {
@@ -335,15 +356,7 @@ var _ = Describe("MigPlan", func() {
 			if !k8serrors.IsNotFound(err) {
 				Expect(err).NotTo(HaveOccurred())
 			}
-			By("Deleting test namespace")
-			Eventually(func() bool {
-				err := c.Delete(context.TODO(), namespace, &client.DeleteOptions{})
-				if k8serrors.IsNotFound(err) {
-					return true
-				}
-				Expect(err).NotTo(HaveOccurred())
-				return false
-			}, 60*time.Second, 2*time.Second).Should(BeTrue())
+			cleanupNamespaceHelper(namespace)
 		})
 
 		createDVSpec := func(sc, size string) *cdiv1.DataVolume {
@@ -513,6 +526,265 @@ var _ = Describe("MigPlan", func() {
 			waitMigrationCompleted([]string{vmRunning.Name, vmOffline.Name}, namespace.Name)
 			verifyRunningVM(vmRunning, targetRunning)
 			verifyOfflineVM(vmOffline, targetOffline)
+		})
+	})
+
+	Context("multi-namespace live migration with deleteSource", func() {
+		const (
+			multiNsPlanName = "e2e-multinamespace-plan"
+			migrationName   = "e2e-multinamespace-migration"
+			bootVolumeName  = "rootdisk"
+			dataVolumeName  = "datadisk"
+		)
+
+		var (
+			namespace        *corev1.Namespace
+			storageClassName string
+		)
+
+		BeforeEach(func() {
+			namespace, storageClassName = setupNamespaceAndStorageClassHelper("e2e-multins-mig-")
+		})
+
+		AfterEach(func() {
+			By("Deleting migration if present")
+			migration := &migrations.MultiNamespaceVirtualMachineStorageMigration{
+				ObjectMeta: metav1.ObjectMeta{Name: migrationName, Namespace: namespace.Name},
+			}
+			err := c.Delete(context.TODO(), migration, &client.DeleteOptions{})
+			if !k8serrors.IsNotFound(err) {
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			By("Deleting multi-namespace plan if present")
+			plan := &migrations.MultiNamespaceVirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: multiNsPlanName, Namespace: namespace.Name},
+			}
+			err = c.Delete(context.TODO(), plan, &client.DeleteOptions{})
+			if !k8serrors.IsNotFound(err) {
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			cleanupNamespaceHelper(namespace)
+		})
+
+		It("should live migrate a VM with multiple disks and delete source PVCs", func() {
+			vmName := "test-vm-multidisk"
+			bootDVName := vmName + "-boot"
+			dataDVName := vmName + "-data"
+
+			By("Creating boot disk DataVolume")
+			bootDV := libdv.NewDataVolume(
+				libdv.WithName(bootDVName),
+				libdv.WithNamespace(namespace.Name),
+				libdv.WithRegistryURLSourceAndCustomCA(
+					cd.DataVolumeImportUrlForContainerDisk(cd.ContainerDiskCirros), registryProxyCACertName),
+				libdv.WithStorage(
+					libdv.StorageWithStorageClass(storageClassName),
+					libdv.StorageWithVolumeSize(cd.CirrosVolumeSize),
+					libdv.StorageWithFilesystemVolumeMode(),
+				),
+			)
+
+			By("Creating data disk DataVolume")
+			dataDV := libdv.NewDataVolume(
+				libdv.WithName(dataDVName),
+				libdv.WithNamespace(namespace.Name),
+				libdv.WithBlankImageSource(),
+				libdv.WithStorage(
+					libdv.StorageWithStorageClass(storageClassName),
+					libdv.StorageWithVolumeSize("1Gi"),
+					libdv.StorageWithFilesystemVolumeMode(),
+				),
+			)
+
+			By("Creating VM with boot disk and data disk")
+			vmi := libvmi.New(
+				libvmi.WithNamespace(namespace.Name),
+				libvmi.WithInterface(libvmi.InterfaceDeviceWithMasqueradeBinding()),
+				libvmi.WithNetwork(virtv1.DefaultPodNetwork()),
+				libvmi.WithMemoryRequest("128Mi"),
+				libvmi.WithDataVolume(bootVolumeName, bootDV.Name),
+				libvmi.WithDataVolume(dataVolumeName, dataDV.Name),
+				libvmi.WithCloudInitNoCloud(libvmifact.WithDummyCloudForFastBoot()),
+			)
+			vm := libvmi.NewVirtualMachine(vmi,
+				libvmi.WithRunStrategy(virtv1.RunStrategyAlways),
+				libvmi.WithDataVolumeTemplate(bootDV),
+				libvmi.WithDataVolumeTemplate(dataDV),
+			)
+			vm.Name = vmName
+			vm.Namespace = namespace.Name
+
+			err := c.Create(context.Background(), vm, &client.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			By("Waiting for VM to be ready")
+			Eventually(matcher.ThisVM(vm, c), 360*time.Second, 1*time.Second).Should(matcher.BeReady())
+
+			By("Waiting for VMI to start successfully")
+			vmi = &virtv1.VirtualMachineInstance{
+				ObjectMeta: metav1.ObjectMeta{Name: vmName, Namespace: namespace.Name},
+			}
+			err = c.Get(context.TODO(), client.ObjectKeyFromObject(vmi), vmi, &client.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			libwait.WaitForSuccessfulVMIStart(vmi, c)
+
+			By("Logging in to the VMI to verify it's running")
+			Expect(console.LoginToCirros(vmi)).To(Succeed())
+
+			// Store original source PVC names
+			originalBootPVC := bootDV.Name
+			originalDataPVC := dataDV.Name
+
+			By("Creating MultiNamespaceVirtualMachineStorageMigrationPlan with deleteSource retention policy")
+			plan := &migrations.MultiNamespaceVirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      multiNsPlanName,
+					Namespace: namespace.Name,
+				},
+				Spec: migrations.MultiNamespaceVirtualMachineStorageMigrationPlanSpec{
+					RetentionPolicy: ptr.To(migrations.RetentionPolicyDeleteSource),
+					Namespaces: []migrations.VirtualMachineStorageMigrationPlanNamespaceSpec{
+						{
+							Name: namespace.Name,
+							VirtualMachineStorageMigrationPlanSpec: &migrations.VirtualMachineStorageMigrationPlanSpec{
+								RetentionPolicy: ptr.To(migrations.RetentionPolicyDeleteSource),
+								VirtualMachines: []migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+									{
+										Name: vmName,
+										TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+											{
+												VolumeName: bootVolumeName,
+												DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+													StorageClassName: &storageClassName,
+													AccessModes: []migrations.VirtualMachineStorageMigrationPlanAccessMode{
+														migrations.VirtualMachineStorageMigrationPlanAccessMode(corev1.ReadWriteOnce),
+													},
+													VolumeMode: ptr.To(corev1.PersistentVolumeMode("Filesystem")),
+												},
+											},
+											{
+												VolumeName: dataVolumeName,
+												DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+													StorageClassName: &storageClassName,
+													AccessModes: []migrations.VirtualMachineStorageMigrationPlanAccessMode{
+														migrations.VirtualMachineStorageMigrationPlanAccessMode(corev1.ReadWriteOnce),
+													},
+													VolumeMode: ptr.To(corev1.PersistentVolumeMode("Filesystem")),
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+			err = c.Create(context.TODO(), plan, &client.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Waiting for plan to be ready")
+			Eventually(func(g Gomega) {
+				By(fmt.Sprintf("Getting plan: %s/%s", namespace.Name, multiNsPlanName))
+				p := &migrations.MultiNamespaceVirtualMachineStorageMigrationPlan{}
+				planKey := client.ObjectKey{Name: multiNsPlanName, Namespace: namespace.Name}
+				getErr := c.Get(context.TODO(), planKey, p, &client.GetOptions{})
+				g.Expect(getErr).NotTo(HaveOccurred(), "error getting plan: %v", getErr)
+				g.Expect(p.Status.Namespaces).NotTo(BeEmpty(), "plan has no namespace status entries")
+				By(fmt.Sprintf("Checking namespace plan conditions: %#v", p.Status.Namespaces[0].Conditions))
+				cond := p.Status.Namespaces[0].FindCondition(migrations.Ready)
+				By(fmt.Sprintf("Checking plan Ready condition: %v", cond))
+				g.Expect(cond).NotTo(BeNil(), "plan Ready condition not found in namespace status")
+				g.Expect(cond.Status).To(Equal(corev1.ConditionTrue), "plan Ready condition: %s", cond.Message)
+			}, 30*time.Second, 5*time.Second).Should(Succeed())
+
+			By("Creating MultiNamespaceVirtualMachineStorageMigration")
+			migration := &migrations.MultiNamespaceVirtualMachineStorageMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      migrationName,
+					Namespace: namespace.Name,
+				},
+				Spec: migrations.MultiNamespaceVirtualMachineStorageMigrationSpec{
+					MultiNamespaceVirtualMachineStorageMigrationPlanRef: &corev1.ObjectReference{
+						Name:      multiNsPlanName,
+						Namespace: namespace.Name,
+					},
+				},
+			}
+			err = c.Create(context.TODO(), migration, &client.CreateOptions{})
+			Expect(err).To(Succeed())
+
+			By("Waiting for migration to complete")
+			Eventually(func(g Gomega) {
+				m := &migrations.MultiNamespaceVirtualMachineStorageMigration{
+					ObjectMeta: metav1.ObjectMeta{Name: migrationName, Namespace: namespace.Name},
+				}
+				Expect(c.Get(context.TODO(), client.ObjectKeyFromObject(m), m, &client.GetOptions{})).To(Succeed())
+				g.Expect(m.Status.Namespaces).ToNot(BeEmpty(), "expected at least 1 namespace status")
+				nsStatus := m.Status.Namespaces[0]
+				g.Expect(nsStatus.Phase).To(Equal(migrations.Completed), "phase=%s", nsStatus.Phase)
+				g.Expect(nsStatus.CompletedMigrations).To(ContainElement(vmName), "completed=%v", nsStatus.CompletedMigrations)
+			}, 10*time.Minute, 15*time.Second).Should(Succeed())
+
+			By("Verifying VM is still running and using new PVCs")
+			migratedVM := &virtv1.VirtualMachine{
+				ObjectMeta: metav1.ObjectMeta{Name: vmName, Namespace: namespace.Name},
+			}
+			err = c.Get(context.TODO(), client.ObjectKeyFromObject(migratedVM), migratedVM, &client.GetOptions{})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify VM is using new DVs (not the original ones)
+			Expect(migratedVM.Spec.DataVolumeTemplates).To(HaveLen(2))
+			Expect(migratedVM.Spec.DataVolumeTemplates[0].Name).NotTo(Equal(originalBootPVC))
+			Expect(migratedVM.Spec.DataVolumeTemplates[1].Name).NotTo(Equal(originalDataPVC))
+
+			// Verify the VM is using the new DataVolumes
+			originalDVs := []string{originalBootPVC, originalDataPVC}
+			for _, volume := range migratedVM.Spec.Template.Spec.Volumes {
+				if volume.DataVolume != nil {
+					Expect(volume.DataVolume.Name).NotTo(BeElementOf(originalDVs))
+				}
+			}
+
+			By("Verifying VM is still accessible after migration")
+			migratedVMI := &virtv1.VirtualMachineInstance{
+				ObjectMeta: metav1.ObjectMeta{Name: vmName, Namespace: namespace.Name},
+			}
+			err = c.Get(context.TODO(), client.ObjectKeyFromObject(migratedVMI), migratedVMI, &client.GetOptions{})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(console.LoginToCirros(migratedVMI)).To(Succeed())
+
+			By("Verifying source DataVolumes are deleted")
+			Eventually(func(g Gomega) {
+				bootDVCheck := &cdiv1.DataVolume{
+					ObjectMeta: metav1.ObjectMeta{Name: originalBootPVC, Namespace: namespace.Name},
+				}
+				err := c.Get(context.TODO(), client.ObjectKeyFromObject(bootDVCheck), bootDVCheck, &client.GetOptions{})
+				g.Expect(k8serrors.IsNotFound(err)).To(BeTrue(), "boot DV %s should be deleted", originalBootPVC)
+
+				dataDVCheck := &cdiv1.DataVolume{
+					ObjectMeta: metav1.ObjectMeta{Name: originalDataPVC, Namespace: namespace.Name},
+				}
+				err = c.Get(context.TODO(), client.ObjectKeyFromObject(dataDVCheck), dataDVCheck, &client.GetOptions{})
+				g.Expect(k8serrors.IsNotFound(err)).To(BeTrue(), "data DV %s should be deleted", originalDataPVC)
+			}, 1*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("Verifying source PVCs are deleted (due to deleteSource retention policy)")
+			Eventually(func(g Gomega) {
+				bootPVC := &corev1.PersistentVolumeClaim{
+					ObjectMeta: metav1.ObjectMeta{Name: originalBootPVC, Namespace: namespace.Name},
+				}
+				err := c.Get(context.TODO(), client.ObjectKeyFromObject(bootPVC), bootPVC, &client.GetOptions{})
+				g.Expect(k8serrors.IsNotFound(err)).To(BeTrue(), "boot PVC %s should be deleted", originalBootPVC)
+
+				dataPVC := &corev1.PersistentVolumeClaim{
+					ObjectMeta: metav1.ObjectMeta{Name: originalDataPVC, Namespace: namespace.Name},
+				}
+				err = c.Get(context.TODO(), client.ObjectKeyFromObject(dataPVC), dataPVC, &client.GetOptions{})
+				g.Expect(k8serrors.IsNotFound(err)).To(BeTrue(), "data PVC %s should be deleted", originalDataPVC)
+			}, 1*time.Minute, 5*time.Second).Should(Succeed())
 		})
 	})
 
