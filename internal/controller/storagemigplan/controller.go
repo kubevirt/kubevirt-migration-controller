@@ -178,6 +178,7 @@ func progressCondition(status corev1.ConditionStatus, message string) migrations
 
 func (r *StorageMigPlanReconciler) updateReadyCompletedMigrations(plan *migrations.VirtualMachineStorageMigrationPlan, lastMigration migrations.VirtualMachineStorageMigration) error {
 	readyMigrations := []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{}
+	inProgressMigrations := []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{}
 	completedVMs := make(map[string]struct{})
 	for _, completedVM := range lastMigration.Status.CompletedMigrations {
 		completedVMs[completedVM] = struct{}{}
@@ -189,7 +190,15 @@ func (r *StorageMigPlanReconciler) updateReadyCompletedMigrations(plan *migratio
 			plan.Status.CompletedMigrations = append(plan.Status.CompletedMigrations, vm)
 		}
 	}
+	for _, vm := range plan.Status.InProgressMigrations {
+		if _, ok := completedVMs[vm.Name]; !ok {
+			inProgressMigrations = append(inProgressMigrations, vm)
+		} else {
+			plan.Status.CompletedMigrations = append(plan.Status.CompletedMigrations, vm)
+		}
+	}
 	plan.Status.ReadyMigrations = readyMigrations
+	plan.Status.InProgressMigrations = inProgressMigrations
 	return nil
 }
 
