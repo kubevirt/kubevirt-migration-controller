@@ -126,6 +126,7 @@ func (r *StorageMigPlanReconciler) validateStorageMigrationPossible(ctx context.
 			continue
 		}
 
+		// Always compute status from current VM spec
 		statusVM, err := r.createStatusVM(ctx, &vm, plan)
 		if err != nil {
 			return err
@@ -136,9 +137,16 @@ func (r *StorageMigPlanReconciler) validateStorageMigrationPossible(ctx context.
 			continue
 		}
 
-		if existingStatusVM, ok := existingStatusVMMap[vm.Name]; ok {
-			// Keep the source PVC from the existing status VM.
-			statusVM.SourcePVCs = existingStatusVM.SourcePVCs
+		// Check if we need to preserve original source PVCs after migration swap
+		if existingStatusVM, ok := existingStatusVMMap[vm.Name]; ok && len(existingStatusVM.SourcePVCs) > 0 {
+			// Detect if the VM spec has been swapped to use target PVCs.
+			// If the newly computed "source" PVCs don't match the originally recorded sources,
+			// then the swap has happened and we should preserve the original sources.
+			swapped := r.hasVMBeenSwapped(existingStatusVM.SourcePVCs, statusVM.SourcePVCs)
+			if swapped {
+				r.Log.V(3).Info("VM has been swapped to target PVCs, preserving original source PVCs", "vm", vm.Name)
+				statusVM.SourcePVCs = existingStatusVM.SourcePVCs
+			}
 		}
 		// Add the virtual machine to the appropriate list based on the migration status
 		switch migrationStatus {
@@ -237,6 +245,32 @@ func (r *StorageMigPlanReconciler) getExistingStatusVMMap(plan *migrations.Virtu
 	}
 
 	return existingStatusVMMap
+}
+
+// hasVMBeenSwapped checks if the VM spec has been swapped to use target PVCs.
+// It compares the originally recorded source PVCs with the newly computed ones.
+// If they don't match, the VM has been swapped.
+func (r *StorageMigPlanReconciler) hasVMBeenSwapped(originalSources, newSources []migrations.VirtualMachineStorageMigrationPlanSourcePVC) bool {
+	if len(originalSources) != len(newSources) {
+		return true
+	}
+
+	// Build a map of original source PVC names by volume name for quick lookup
+	originalSourceMap := make(map[string]string)
+	for _, src := range originalSources {
+		originalSourceMap[src.VolumeName] = src.Name
+	}
+
+	// Check if any of the new source PVCs differ from the originals
+	for _, newSrc := range newSources {
+		originalName, exists := originalSourceMap[newSrc.VolumeName]
+		if !exists || originalName != newSrc.Name {
+			// Source PVC name changed for this volume - swap detected
+			return true
+		}
+	}
+
+	return false
 }
 
 func (r *StorageMigPlanReconciler) createStatusVM(ctx context.Context, migPlanVM *migrations.VirtualMachineStorageMigrationPlanVirtualMachine, plan *migrations.VirtualMachineStorageMigrationPlan) (migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, error) {
