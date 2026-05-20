@@ -1035,4 +1035,309 @@ var _ = Describe("StorageMigration VM patch ordering", func() {
 		// This prevents the VM from starting until DVs are in Succeeded/WaitForFirstConsumer phase
 		Expect(updatedVM.Spec.UpdateVolumesStrategy).To(BeNil(), "UpdateVolumesStrategy should not be set for offline migration to prevent VM from starting prematurely")
 	})
+
+	Context("Multiple volumes with multiple VMs", func() {
+		const (
+			vm1Name       = "test-vm-1"
+			vm2Name       = "test-vm-2"
+			rootVolume    = "rootdisk"
+			dataVolume    = "datadisk"
+			vm1RootSrc    = "vm1-root-src"
+			vm1DataSrc    = "vm1-data-src"
+			vm1RootTarget = "vm1-root-target"
+			vm1DataTarget = "vm1-data-target"
+			vm2RootSrc    = "vm2-root-src"
+			vm2DataSrc    = "vm2-data-src"
+			vm2RootTarget = "vm2-root-target"
+			vm2DataTarget = "vm2-data-target"
+		)
+
+		createVMWithTwoVolumes := func(vmName, rootDV, dataDV string) *virtv1.VirtualMachine {
+			return &virtv1.VirtualMachine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      vmName,
+					Namespace: testNamespace,
+				},
+				Spec: virtv1.VirtualMachineSpec{
+					DataVolumeTemplates: []virtv1.DataVolumeTemplateSpec{
+						{
+							ObjectMeta: metav1.ObjectMeta{
+								Name: rootDV,
+							},
+							Spec: cdiv1.DataVolumeSpec{
+								Source: &cdiv1.DataVolumeSource{
+									Blank: &cdiv1.DataVolumeBlankImage{},
+								},
+								Storage: &cdiv1.StorageSpec{
+									Resources: corev1.VolumeResourceRequirements{
+										Requests: corev1.ResourceList{
+											corev1.ResourceStorage: resource.MustParse("10Gi"),
+										},
+									},
+									StorageClassName: ptr.To(testStorageClass),
+								},
+							},
+						},
+						{
+							ObjectMeta: metav1.ObjectMeta{
+								Name: dataDV,
+							},
+							Spec: cdiv1.DataVolumeSpec{
+								Source: &cdiv1.DataVolumeSource{
+									Blank: &cdiv1.DataVolumeBlankImage{},
+								},
+								Storage: &cdiv1.StorageSpec{
+									Resources: corev1.VolumeResourceRequirements{
+										Requests: corev1.ResourceList{
+											corev1.ResourceStorage: resource.MustParse("20Gi"),
+										},
+									},
+									StorageClassName: ptr.To(testStorageClass),
+								},
+							},
+						},
+					},
+					Template: &virtv1.VirtualMachineInstanceTemplateSpec{
+						Spec: virtv1.VirtualMachineInstanceSpec{
+							Volumes: []virtv1.Volume{
+								{
+									Name: rootVolume,
+									VolumeSource: virtv1.VolumeSource{
+										DataVolume: &virtv1.DataVolumeSource{
+											Name: rootDV,
+										},
+									},
+								},
+								{
+									Name: dataVolume,
+									VolumeSource: virtv1.VolumeSource{
+										DataVolume: &virtv1.DataVolumeSource{
+											Name: dataDV,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+		}
+
+		createPlanVMWithTwoVolumes := func(rootSrc, dataSrc, rootTarget, dataTarget string) migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine {
+			return migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+				VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+					TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+						{
+							VolumeName: rootVolume,
+							DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+								Name:             ptr.To(rootTarget),
+								StorageClassName: ptr.To("new-storage-class"),
+							},
+						},
+						{
+							VolumeName: dataVolume,
+							DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+								Name:             ptr.To(dataTarget),
+								StorageClassName: ptr.To("new-storage-class"),
+							},
+						},
+					},
+				},
+				SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+					{
+						VolumeName: rootVolume,
+						Name:       rootSrc,
+						Namespace:  testNamespace,
+					},
+					{
+						VolumeName: dataVolume,
+						Name:       dataSrc,
+						Namespace:  testNamespace,
+					},
+				},
+			}
+		}
+
+		It("should correctly map multiple volumes for live migration without swapping source and target", func() {
+			// Create first VM with two volumes
+			vm1 := createVMWithTwoVolumes(vm1Name, vm1RootSrc, vm1DataSrc)
+			Expect(k8sClient.Create(ctx, vm1)).To(Succeed())
+
+			// Create second VM with two volumes
+			vm2 := createVMWithTwoVolumes(vm2Name, vm2RootSrc, vm2DataSrc)
+			Expect(k8sClient.Create(ctx, vm2)).To(Succeed())
+
+			// Create plan for VM1
+			planVM1 := createPlanVMWithTwoVolumes(vm1RootSrc, vm1DataSrc, vm1RootTarget, vm1DataTarget)
+
+			// Create plan for VM2
+			planVM2 := createPlanVMWithTwoVolumes(vm2RootSrc, vm2DataSrc, vm2RootTarget, vm2DataTarget)
+
+			// Update VM1 for live migration
+			t := &Task{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Log:    logf.Log.WithName("test"),
+			}
+			Expect(t.updateVMForStorageMigration(ctx, vm1, planVM1)).To(Succeed())
+
+			// Update VM2 for live migration
+			Expect(t.updateVMForStorageMigration(ctx, vm2, planVM2)).To(Succeed())
+
+			// Verify VM1 updates
+			updatedVM1 := &virtv1.VirtualMachine{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: vm1Name}, updatedVM1)).To(Succeed())
+
+			// CRITICAL: Verify VM1 source and target are NOT swapped
+			Expect(updatedVM1.Spec.Template.Spec.Volumes).To(HaveLen(2))
+
+			// Root volume should point to TARGET (not source!)
+			rootVol := findVolume(updatedVM1.Spec.Template.Spec.Volumes, rootVolume)
+			Expect(rootVol).ToNot(BeNil(), "rootdisk volume should exist")
+			Expect(rootVol.DataVolume).ToNot(BeNil(), "rootdisk should have DataVolume source")
+			Expect(rootVol.DataVolume.Name).To(Equal(vm1RootTarget), "rootdisk should point to TARGET not source")
+
+			// Data volume should point to TARGET (not source!)
+			dataVol := findVolume(updatedVM1.Spec.Template.Spec.Volumes, dataVolume)
+			Expect(dataVol).ToNot(BeNil(), "datadisk volume should exist")
+			Expect(dataVol.DataVolume).ToNot(BeNil(), "datadisk should have DataVolume source")
+			Expect(dataVol.DataVolume.Name).To(Equal(vm1DataTarget), "datadisk should point to TARGET not source")
+
+			// Verify DataVolumeTemplates are updated correctly
+			Expect(updatedVM1.Spec.DataVolumeTemplates).To(HaveLen(2))
+			rootDVT := findDataVolumeTemplate(updatedVM1.Spec.DataVolumeTemplates, vm1RootTarget)
+			Expect(rootDVT).ToNot(BeNil(), "root DataVolumeTemplate should exist with target name")
+			Expect(*rootDVT.Spec.Storage.StorageClassName).To(Equal("new-storage-class"))
+
+			dataDVT := findDataVolumeTemplate(updatedVM1.Spec.DataVolumeTemplates, vm1DataTarget)
+			Expect(dataDVT).ToNot(BeNil(), "data DataVolumeTemplate should exist with target name")
+			Expect(*dataDVT.Spec.Storage.StorageClassName).To(Equal("new-storage-class"))
+
+			// Verify UpdateVolumesStrategy is set for live migration
+			Expect(updatedVM1.Spec.UpdateVolumesStrategy).ToNot(BeNil())
+			Expect(*updatedVM1.Spec.UpdateVolumesStrategy).To(Equal(virtv1.UpdateVolumesStrategyMigration))
+
+			// Verify VM2 updates
+			updatedVM2 := &virtv1.VirtualMachine{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: vm2Name}, updatedVM2)).To(Succeed())
+
+			// CRITICAL: Verify VM2 source and target are also NOT swapped
+			Expect(updatedVM2.Spec.Template.Spec.Volumes).To(HaveLen(2))
+
+			rootVol2 := findVolume(updatedVM2.Spec.Template.Spec.Volumes, rootVolume)
+			Expect(rootVol2.DataVolume.Name).To(Equal(vm2RootTarget), "VM2 rootdisk should point to TARGET not source")
+
+			dataVol2 := findVolume(updatedVM2.Spec.Template.Spec.Volumes, dataVolume)
+			Expect(dataVol2.DataVolume.Name).To(Equal(vm2DataTarget), "VM2 datadisk should point to TARGET not source")
+		})
+
+		It("should correctly map multiple volumes for offline migration without swapping source and target", func() {
+			// Create VM with two volumes
+			vm := createVMWithTwoVolumes(vm1Name, vm1RootSrc, vm1DataSrc)
+			Expect(k8sClient.Create(ctx, vm)).To(Succeed())
+
+			// Create plan
+			planVM := createPlanVMWithTwoVolumes(vm1RootSrc, vm1DataSrc, vm1RootTarget, vm1DataTarget)
+
+			// Update VM for offline migration
+			t := &Task{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Log:    logf.Log.WithName("test"),
+			}
+			Expect(t.updateVMForOfflineStorageMigration(ctx, vm, planVM)).To(Succeed())
+
+			// Verify VM updates
+			updatedVM := &virtv1.VirtualMachine{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: vm1Name}, updatedVM)).To(Succeed())
+
+			// CRITICAL: Verify source and target are NOT swapped
+			rootVol := findVolume(updatedVM.Spec.Template.Spec.Volumes, rootVolume)
+			Expect(rootVol.DataVolume.Name).To(Equal(vm1RootTarget), "rootdisk should point to TARGET not source")
+
+			dataVol := findVolume(updatedVM.Spec.Template.Spec.Volumes, dataVolume)
+			Expect(dataVol.DataVolume.Name).To(Equal(vm1DataTarget), "datadisk should point to TARGET not source")
+
+			// Verify UpdateVolumesStrategy is NOT set for offline migration
+			Expect(updatedVM.Spec.UpdateVolumesStrategy).To(BeNil())
+		})
+
+		It("should handle volume order correctly when source order differs from spec order", func() {
+			// Create VM with volumes in one order (rootdisk, datadisk)
+			vm := createVMWithTwoVolumes(vm1Name, vm1RootSrc, vm1DataSrc)
+			Expect(k8sClient.Create(ctx, vm)).To(Succeed())
+
+			// Create plan with volumes in DIFFERENT order (datadisk first, rootdisk second)
+			planVM := migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+				VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+					TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+						{
+							VolumeName: dataVolume,
+							DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+								Name:             ptr.To(vm1DataTarget),
+								StorageClassName: ptr.To("new-storage-class"),
+							},
+						},
+						{
+							VolumeName: rootVolume,
+							DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+								Name:             ptr.To(vm1RootTarget),
+								StorageClassName: ptr.To("new-storage-class"),
+							},
+						},
+					},
+				},
+				SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+					{
+						VolumeName: dataVolume, // Note: data volume FIRST
+						Name:       vm1DataSrc,
+						Namespace:  testNamespace,
+					},
+					{
+						VolumeName: rootVolume, // Note: root volume SECOND
+						Name:       vm1RootSrc,
+						Namespace:  testNamespace,
+					},
+				},
+			}
+
+			// Update VM
+			t := &Task{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Log:    logf.Log.WithName("test"),
+			}
+			Expect(t.updateVMForStorageMigration(ctx, vm, planVM)).To(Succeed())
+
+			// Verify volumes are mapped correctly by volumeName, not by index
+			updatedVM := &virtv1.VirtualMachine{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: vm1Name}, updatedVM)).To(Succeed())
+
+			// CRITICAL: Mapping should be by volumeName, so order doesn't matter
+			rootVol := findVolume(updatedVM.Spec.Template.Spec.Volumes, rootVolume)
+			Expect(rootVol.DataVolume.Name).To(Equal(vm1RootTarget), "rootdisk should map to correct target regardless of plan order")
+
+			dataVol := findVolume(updatedVM.Spec.Template.Spec.Volumes, dataVolume)
+			Expect(dataVol.DataVolume.Name).To(Equal(vm1DataTarget), "datadisk should map to correct target regardless of plan order")
+		})
+	})
 })
+
+// Helper functions for multi-volume tests
+func findVolume(volumes []virtv1.Volume, name string) *virtv1.Volume {
+	for i := range volumes {
+		if volumes[i].Name == name {
+			return &volumes[i]
+		}
+	}
+	return nil
+}
+
+func findDataVolumeTemplate(templates []virtv1.DataVolumeTemplateSpec, name string) *virtv1.DataVolumeTemplateSpec {
+	for i := range templates {
+		if templates[i].Name == name {
+			return &templates[i]
+		}
+	}
+	return nil
+}
