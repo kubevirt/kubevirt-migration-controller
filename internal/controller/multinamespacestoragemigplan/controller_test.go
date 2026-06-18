@@ -91,6 +91,10 @@ var _ = Describe("MultiNamespaceStorageMigPlan controller", func() {
 				childPlan = &migrations.VirtualMachineStorageMigrationPlan{}
 				err = reconciler.Client.Get(ctx, types.NamespacedName{Name: childPlanName, Namespace: testutils.TestNamespace}, childPlan)
 				Expect(k8serrors.IsNotFound(err)).To(BeTrue())
+
+				By("Verifying parent was fully removed after finalizer cleanup")
+				err = reconciler.Client.Get(ctx, nn, multiPlan)
+				Expect(k8serrors.IsNotFound(err)).To(BeTrue())
 			})
 		})
 
@@ -115,7 +119,15 @@ var _ = Describe("MultiNamespaceStorageMigPlan controller", func() {
 					},
 					Spec: migrations.VirtualMachineStorageMigrationPlanSpec{
 						VirtualMachines: []migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
-							{Name: "stale-vm"},
+							{
+								Name: "stale-vm",
+								TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+									{
+										VolumeName:     "stale-volume",
+										DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{},
+									},
+								},
+							},
 						},
 					},
 					Status: migrations.VirtualMachineStorageMigrationPlanStatus{
