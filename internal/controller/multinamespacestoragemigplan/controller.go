@@ -128,6 +128,14 @@ func (r *MultiNamespaceStorageMigPlanReconciler) Reconcile(ctx context.Context, 
 			if err != nil {
 				return reconcile.Result{}, err
 			}
+		} else if !r.isChildOwnedByPlan(namespacedPlan, plan) {
+			log.V(3).Info("Deleting stale namespace plan", "namespace", namespace.Name, "childUID", namespacedPlan.Labels[multiNamespaceStorageMigPlanUIDLabel], "parentUID", plan.UID)
+			if err := r.deleteChildPlan(ctx, namespacedPlan); err != nil {
+				return reconcile.Result{}, err
+			}
+			if err := r.createNamespacePlan(ctx, plan, &namespace); err != nil {
+				return reconcile.Result{}, err
+			}
 		} else {
 			log.V(5).Info("Updating namespace plan status", "namespace", namespace.Name)
 			// Update the status of the multi-namespace storage migration plan
@@ -215,7 +223,7 @@ func (r *MultiNamespaceStorageMigPlanReconciler) runFinalizer(ctx context.Contex
 		if !r.isChildOwnedByPlan(childPlan, plan) {
 			continue
 		}
-		if err := r.Delete(ctx, childPlan); err != nil && !k8serrors.IsNotFound(err) {
+		if err := r.deleteChildPlan(ctx, childPlan); err != nil {
 			return err
 		}
 	}
@@ -284,9 +292,28 @@ func (r *MultiNamespaceStorageMigPlanReconciler) createNamespacePlan(ctx context
 	}
 
 	if err := r.Create(ctx, namespacePlan); err != nil {
-		if k8serrors.IsAlreadyExists(err) {
+		if !k8serrors.IsAlreadyExists(err) {
+			return err
+		}
+		existing, getErr := r.getNamespacePlan(ctx, plan.Name, namespace)
+		if getErr != nil {
+			return getErr
+		}
+		if existing != nil && r.isChildOwnedByPlan(existing, plan) {
 			return nil
 		}
+		if existing != nil {
+			if err := r.deleteChildPlan(ctx, existing); err != nil {
+				return err
+			}
+		}
+		return r.Create(ctx, namespacePlan)
+	}
+	return nil
+}
+
+func (r *MultiNamespaceStorageMigPlanReconciler) deleteChildPlan(ctx context.Context, childPlan *migrations.VirtualMachineStorageMigrationPlan) error {
+	if err := r.Delete(ctx, childPlan); err != nil && !k8serrors.IsNotFound(err) {
 		return err
 	}
 	return nil
