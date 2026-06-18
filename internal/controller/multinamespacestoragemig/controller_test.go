@@ -94,6 +94,51 @@ var _ = Describe("MultiNamespaceStorageMigration controller", func() {
 				childMigration = &migrations.VirtualMachineStorageMigration{}
 				err = reconciler.Client.Get(ctx, types.NamespacedName{Name: childMigrationName, Namespace: testutils.TestNamespace}, childMigration)
 				Expect(k8serrors.IsNotFound(err)).To(BeTrue())
+
+				By("Verifying parent was fully removed after finalizer cleanup")
+				err = reconciler.Client.Get(ctx, nn, multiMigration)
+				Expect(k8serrors.IsNotFound(err)).To(BeTrue())
+			})
+
+			It("should delete owned child migrations when the referenced plan is already gone", func() {
+				planName := "test-plan-gone-mig-plan"
+				migrationName := "test-plan-gone-migration"
+				nn := types.NamespacedName{Name: migrationName, Namespace: testutils.TestNamespace}
+				childMigrationName := migrations.GetNamespacedPlanName(planName, testutils.TestNamespace)
+
+				multiPlan := createMultiNamespaceStorageMigrationPlan(planName)
+				multiMigration := createMultiNamespaceStorageMigration(migrationName, planName)
+				Expect(reconciler.Client.Create(ctx, multiPlan)).To(Succeed())
+				Expect(reconciler.Client.Create(ctx, multiMigration)).To(Succeed())
+
+				By("Reconciling to add finalizer and create child migration")
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+				Expect(err).NotTo(HaveOccurred())
+				_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(reconciler.Client.Get(ctx, nn, multiMigration)).To(Succeed())
+				parentUID := multiMigration.UID
+
+				By("Deleting the referenced multi-namespace plan first")
+				Expect(reconciler.Client.Delete(ctx, multiPlan)).To(Succeed())
+
+				By("Deleting the multi-namespace migration")
+				Expect(reconciler.Client.Delete(ctx, multiMigration)).To(Succeed())
+
+				By("Reconciling to run finalizer using UID label discovery")
+				_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying child migration was deleted without plan lookup")
+				childMigration := &migrations.VirtualMachineStorageMigration{}
+				err = reconciler.Client.Get(ctx, types.NamespacedName{Name: childMigrationName, Namespace: testutils.TestNamespace}, childMigration)
+				Expect(k8serrors.IsNotFound(err)).To(BeTrue())
+
+				By("Verifying parent was fully removed after finalizer cleanup")
+				err = reconciler.Client.Get(ctx, nn, multiMigration)
+				Expect(k8serrors.IsNotFound(err)).To(BeTrue())
+				Expect(string(parentUID)).NotTo(BeEmpty())
 			})
 		})
 

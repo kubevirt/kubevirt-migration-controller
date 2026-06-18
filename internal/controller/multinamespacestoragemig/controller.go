@@ -22,6 +22,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -53,6 +54,8 @@ const (
 	multiNamespaceStorageMigrationNamespaceAnnotation = "migration.kubevirt.io/multi-namespace-storage-mig-namespace"
 
 	multiNamespaceStorageMigrationFinalizer = "migrations.kubevirt.io/multinamespace-storage-migration-finalizer"
+
+	finalizerRequeueInterval = 2 * time.Second
 )
 
 // MigMigrationReconciler reconciles a MigMigration object
@@ -83,10 +86,7 @@ func (r *MultiNamespaceStorageMigrationReconciler) Reconcile(ctx context.Context
 
 	// If the migration is being deleted, run finalizer logic.
 	if migration.DeletionTimestamp != nil {
-		if err := r.runFinalizer(ctx, migration); err != nil {
-			return reconcile.Result{}, err
-		}
-		return reconcile.Result{}, nil
+		return r.runFinalizer(ctx, migration)
 	}
 
 	// Ensure finalizer is present so we can cascade-delete children when the migration is deleted.
@@ -187,37 +187,46 @@ func (r *MultiNamespaceStorageMigrationReconciler) getVirtualMachineStorageMigra
 	return virtualMachineStorageMigration, nil
 }
 
-// runFinalizer deletes all child VirtualMachineStorageMigration resources and then removes the finalizer.
-func (r *MultiNamespaceStorageMigrationReconciler) runFinalizer(ctx context.Context, migration *migrations.MultiNamespaceVirtualMachineStorageMigration) error {
-	if migration.Spec.MultiNamespaceVirtualMachineStorageMigrationPlanRef != nil {
-		migration.Spec.MultiNamespaceVirtualMachineStorageMigrationPlanRef.Namespace = migration.Namespace
-	}
-	plan, err := componenthelpers.GetMultiNamespaceStorageMigrationPlan(ctx, r.Client, migration.Spec.MultiNamespaceVirtualMachineStorageMigrationPlanRef)
+// runFinalizer deletes all owned child VirtualMachineStorageMigration resources and
+// removes the finalizer only after they are gone from the API.
+func (r *MultiNamespaceStorageMigrationReconciler) runFinalizer(ctx context.Context, migration *migrations.MultiNamespaceVirtualMachineStorageMigration) (ctrl.Result, error) {
+	children, err := r.listOwnedChildMigrations(ctx, migration)
 	if err != nil {
-		return err
+		return ctrl.Result{}, err
 	}
-	if plan != nil {
-		for i := range plan.Spec.Namespaces {
-			namespacePlan := &plan.Spec.Namespaces[i]
-			childMigration, err := r.getVirtualMachineStorageMigration(ctx, plan, namespacePlan)
-			if err != nil {
-				return err
-			}
-			if childMigration == nil {
-				continue
-			}
-			if !r.isChildOwnedByMigration(childMigration, migration) {
-				continue
-			}
-			if err := r.deleteChildMigration(ctx, childMigration); err != nil {
-				return err
-			}
+
+	for i := range children {
+		child := &children[i]
+		if child.DeletionTimestamp != nil {
+			continue
+		}
+		if err := r.deleteChildMigration(ctx, child); err != nil {
+			return ctrl.Result{}, err
 		}
 	}
+
+	children, err = r.listOwnedChildMigrations(ctx, migration)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(children) > 0 {
+		return ctrl.Result{RequeueAfter: finalizerRequeueInterval}, nil
+	}
+
 	migration.Finalizers = slices.DeleteFunc(migration.Finalizers, func(s string) bool {
 		return s == multiNamespaceStorageMigrationFinalizer
 	})
-	return r.Update(ctx, migration)
+	return ctrl.Result{}, r.Update(ctx, migration)
+}
+
+func (r *MultiNamespaceStorageMigrationReconciler) listOwnedChildMigrations(ctx context.Context, migration *migrations.MultiNamespaceVirtualMachineStorageMigration) ([]migrations.VirtualMachineStorageMigration, error) {
+	childList := &migrations.VirtualMachineStorageMigrationList{}
+	if err := r.List(ctx, childList, client.MatchingLabels{
+		multiNamespaceStorageMigrationUIDLabel: string(migration.UID),
+	}); err != nil {
+		return nil, err
+	}
+	return childList.Items, nil
 }
 
 func (r *MultiNamespaceStorageMigrationReconciler) isChildOwnedByMigration(child *migrations.VirtualMachineStorageMigration, migration *migrations.MultiNamespaceVirtualMachineStorageMigration) bool {
