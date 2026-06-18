@@ -94,6 +94,56 @@ var _ = Describe("MultiNamespaceStorageMigPlan controller", func() {
 			})
 		})
 
+		Context("Stale child replacement", func() {
+			It("should replace orphaned child plan when parent is recreated with a new UID", func() {
+				planName := "test-stale-child-plan"
+				nn := types.NamespacedName{Name: planName, Namespace: testutils.TestNamespace}
+				childPlanName := migrations.GetNamespacedPlanName(planName, testutils.TestNamespace)
+
+				By("Creating an orphaned child plan from a previous parent")
+				staleChild := &migrations.VirtualMachineStorageMigrationPlan{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      childPlanName,
+						Namespace: testutils.TestNamespace,
+						Labels: map[string]string{
+							multiNamespaceStorageMigPlanUIDLabel: "stale-parent-uid",
+						},
+						Annotations: map[string]string{
+							multiNamespaceStorageMigPlanNameAnnotation:      planName,
+							multiNamespaceStorageMigPlanNamespaceAnnotation: testutils.TestNamespace,
+						},
+					},
+					Spec: migrations.VirtualMachineStorageMigrationPlanSpec{
+						VirtualMachines: []migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+							{Name: "stale-vm"},
+						},
+					},
+					Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+						CompletedOutOf: "1/1",
+					},
+				}
+				Expect(reconciler.Client.Create(ctx, staleChild)).To(Succeed())
+
+				By("Creating a new multi-namespace plan with the same name")
+				multiPlan := createMultiNamespaceStorageMigrationPlan(planName)
+				Expect(reconciler.Client.Create(ctx, multiPlan)).To(Succeed())
+
+				By("Reconciling to replace the stale child plan")
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying the child plan was recreated for the new parent")
+				childPlan := &migrations.VirtualMachineStorageMigrationPlan{}
+				Expect(reconciler.Client.Get(ctx, types.NamespacedName{Name: childPlanName, Namespace: testutils.TestNamespace}, childPlan)).To(Succeed())
+				Expect(reconciler.Client.Get(ctx, nn, multiPlan)).To(Succeed())
+				Expect(childPlan.UID).NotTo(Equal(staleChild.UID))
+				Expect(childPlan.Labels).To(HaveKeyWithValue(multiNamespaceStorageMigPlanUIDLabel, string(multiPlan.UID)))
+				Expect(childPlan.Spec.VirtualMachines).To(HaveLen(1))
+				Expect(childPlan.Spec.VirtualMachines[0].Name).To(Equal("simple-vm"))
+				Expect(childPlan.Status.CompletedOutOf).To(BeEmpty())
+			})
+		})
+
 		Context("Naming length constraints", func() {
 			It("should respect naming length constraints for namespaced plans", func() {
 				name := strings.Repeat("a", kvalidation.DNS1123SubdomainMaxLength)
