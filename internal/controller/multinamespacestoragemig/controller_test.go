@@ -97,6 +97,62 @@ var _ = Describe("MultiNamespaceStorageMigration controller", func() {
 			})
 		})
 
+		Context("Stale child replacement", func() {
+			It("should replace orphaned child migration when parent is recreated with a new UID", func() {
+				planName := "test-stale-child-mig-plan"
+				migrationName := "test-stale-child-migration"
+				nn := types.NamespacedName{Name: migrationName, Namespace: testutils.TestNamespace}
+				childMigrationName := migrations.GetNamespacedPlanName(planName, testutils.TestNamespace)
+
+				By("Creating an orphaned child migration from a previous parent")
+				staleChild := &migrations.VirtualMachineStorageMigration{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      childMigrationName,
+						Namespace: testutils.TestNamespace,
+						Labels: map[string]string{
+							multiNamespaceStorageMigrationUIDLabel: "stale-parent-uid",
+						},
+						Annotations: map[string]string{
+							multiNamespaceStorageMigrationNameAnnotation:      migrationName,
+							multiNamespaceStorageMigrationNamespaceAnnotation: testutils.TestNamespace,
+						},
+					},
+					Spec: migrations.VirtualMachineStorageMigrationSpec{
+						VirtualMachineStorageMigrationPlanRef: &corev1.ObjectReference{
+							Name:      childMigrationName,
+							Namespace: testutils.TestNamespace,
+						},
+					},
+					Status: migrations.VirtualMachineStorageMigrationStatus{
+						Phase: migrations.Completed,
+					},
+				}
+				Expect(reconciler.Client.Create(ctx, staleChild)).To(Succeed())
+
+				By("Creating a new multi-namespace plan and migration with the same name")
+				multiPlan := createMultiNamespaceStorageMigrationPlan(planName)
+				multiMigration := createMultiNamespaceStorageMigration(migrationName, planName)
+				Expect(reconciler.Client.Create(ctx, multiPlan)).To(Succeed())
+				Expect(reconciler.Client.Create(ctx, multiMigration)).To(Succeed())
+
+				By("Reconciling to add finalizer")
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Reconciling to replace the stale child migration")
+				_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying the child migration was recreated for the new parent")
+				childMigration := &migrations.VirtualMachineStorageMigration{}
+				Expect(reconciler.Client.Get(ctx, types.NamespacedName{Name: childMigrationName, Namespace: testutils.TestNamespace}, childMigration)).To(Succeed())
+				Expect(reconciler.Client.Get(ctx, nn, multiMigration)).To(Succeed())
+				Expect(childMigration.UID).NotTo(Equal(staleChild.UID))
+				Expect(childMigration.Labels).To(HaveKeyWithValue(multiNamespaceStorageMigrationUIDLabel, string(multiMigration.UID)))
+				Expect(childMigration.Status.Phase).To(BeEmpty())
+			})
+		})
+
 		Context("Naming length constraints", func() {
 			It("should respect naming length constraints for namespaced plans", func() {
 				name := strings.Repeat("a", kvalidation.DNS1123SubdomainMaxLength)
