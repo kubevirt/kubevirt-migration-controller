@@ -139,6 +139,15 @@ func (r *MultiNamespaceStorageMigrationReconciler) Reconcile(ctx context.Context
 					return reconcile.Result{}, err
 				}
 				return reconcile.Result{}, nil
+			} else if !r.isChildOwnedByMigration(virtualMachineStorageMigration, migration) {
+				log.V(3).Info("Deleting stale virtual machine storage migration", "namespace", namespacePlan.Name, "childUID", virtualMachineStorageMigration.Labels[multiNamespaceStorageMigrationUIDLabel], "parentUID", migration.UID)
+				if err := r.deleteChildMigration(ctx, virtualMachineStorageMigration); err != nil {
+					return reconcile.Result{}, err
+				}
+				if err := r.createNamespacedMigration(ctx, plan.Name, migration, &namespacePlan); err != nil {
+					return reconcile.Result{}, err
+				}
+				return reconcile.Result{}, nil
 			} else {
 				r.updateNamespaceMigrationStatus(migration, virtualMachineStorageMigration, namespacePlan.Name)
 			}
@@ -200,7 +209,7 @@ func (r *MultiNamespaceStorageMigrationReconciler) runFinalizer(ctx context.Cont
 			if !r.isChildOwnedByMigration(childMigration, migration) {
 				continue
 			}
-			if err := r.Delete(ctx, childMigration, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !k8serrors.IsNotFound(err) {
+			if err := r.deleteChildMigration(ctx, childMigration); err != nil {
 				return err
 			}
 		}
@@ -239,9 +248,26 @@ func (r *MultiNamespaceStorageMigrationReconciler) createNamespacedMigration(ctx
 		},
 	}
 	if err := r.Create(ctx, virtualMachineStorageMigration); err != nil {
-		if k8serrors.IsAlreadyExists(err) {
+		if !k8serrors.IsAlreadyExists(err) {
+			return err
+		}
+		existing := &migrations.VirtualMachineStorageMigration{}
+		if err := r.Client.Get(ctx, types.NamespacedName{Name: virtualMachineStorageMigration.Name, Namespace: virtualMachineStorageMigration.Namespace}, existing); err != nil {
+			return err
+		}
+		if r.isChildOwnedByMigration(existing, migration) {
 			return nil
 		}
+		if err := r.deleteChildMigration(ctx, existing); err != nil {
+			return err
+		}
+		return r.Create(ctx, virtualMachineStorageMigration)
+	}
+	return nil
+}
+
+func (r *MultiNamespaceStorageMigrationReconciler) deleteChildMigration(ctx context.Context, childMigration *migrations.VirtualMachineStorageMigration) error {
+	if err := r.Delete(ctx, childMigration, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !k8serrors.IsNotFound(err) {
 		return err
 	}
 	return nil
