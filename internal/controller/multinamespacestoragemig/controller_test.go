@@ -68,12 +68,8 @@ var _ = Describe("MultiNamespaceStorageMigration controller", func() {
 				Expect(reconciler.Client.Create(ctx, multiPlan)).To(Succeed())
 				Expect(reconciler.Client.Create(ctx, multiMigration)).To(Succeed())
 
-				By("Reconciling to add finalizer")
+				By("Reconciling to add finalizer and create child migration")
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
-				Expect(err).NotTo(HaveOccurred())
-
-				By("Reconciling to create child migration")
-				_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 				Expect(err).NotTo(HaveOccurred())
 
 				childMigrationName := migrations.GetNamespacedPlanName(planName, testutils.TestNamespace)
@@ -113,8 +109,6 @@ var _ = Describe("MultiNamespaceStorageMigration controller", func() {
 
 				By("Reconciling to add finalizer and create child migration")
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
-				Expect(err).NotTo(HaveOccurred())
-				_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 				Expect(err).NotTo(HaveOccurred())
 
 				Expect(reconciler.Client.Get(ctx, nn, multiMigration)).To(Succeed())
@@ -180,12 +174,8 @@ var _ = Describe("MultiNamespaceStorageMigration controller", func() {
 				Expect(reconciler.Client.Create(ctx, multiPlan)).To(Succeed())
 				Expect(reconciler.Client.Create(ctx, multiMigration)).To(Succeed())
 
-				By("Reconciling to add finalizer")
+				By("Reconciling to add finalizer and replace the stale child migration")
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
-				Expect(err).NotTo(HaveOccurred())
-
-				By("Reconciling to replace the stale child migration")
-				_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 				Expect(err).NotTo(HaveOccurred())
 
 				By("Verifying the child migration was recreated for the new parent")
@@ -198,6 +188,54 @@ var _ = Describe("MultiNamespaceStorageMigration controller", func() {
 			})
 		})
 
+		Context("Unowned migration conflict", func() {
+			It("should mark the parent migration failed when a pre-existing unowned migration blocks creation", func() {
+				planName := "test-unowned-mig-plan"
+				migrationName := "test-unowned-migration"
+				nn := types.NamespacedName{Name: migrationName, Namespace: testutils.TestNamespace}
+				childMigrationName := migrations.GetNamespacedPlanName(planName, testutils.TestNamespace)
+
+				By("Creating a migration with the target name that has no UID label (user-created)")
+				unownedMigration := &migrations.VirtualMachineStorageMigration{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      childMigrationName,
+						Namespace: testutils.TestNamespace,
+					},
+					Spec: migrations.VirtualMachineStorageMigrationSpec{
+						VirtualMachineStorageMigrationPlanRef: &corev1.ObjectReference{
+							Name:      childMigrationName,
+							Namespace: testutils.TestNamespace,
+						},
+					},
+				}
+				Expect(reconciler.Client.Create(ctx, unownedMigration)).To(Succeed())
+
+				By("Creating a multi-namespace plan and migration")
+				multiPlan := createMultiNamespaceStorageMigrationPlan(planName)
+				multiMigration := createMultiNamespaceStorageMigration(migrationName, planName)
+				Expect(reconciler.Client.Create(ctx, multiPlan)).To(Succeed())
+				Expect(reconciler.Client.Create(ctx, multiMigration)).To(Succeed())
+
+				By("Reconciling — should detect conflict and mark parent failed")
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying the unowned migration was NOT deleted")
+				existing := &migrations.VirtualMachineStorageMigration{}
+				Expect(reconciler.Client.Get(ctx, types.NamespacedName{Name: childMigrationName, Namespace: testutils.TestNamespace}, existing)).To(Succeed())
+				Expect(existing.UID).To(Equal(unownedMigration.UID))
+
+				By("Verifying the parent migration has a ConflictingMigration condition")
+				Expect(reconciler.Client.Get(ctx, nn, multiMigration)).To(Succeed())
+				condition := multiMigration.Status.FindCondition(migrations.ConflictingMigration)
+				Expect(condition).NotTo(BeNil())
+				Expect(condition.Status).To(Equal(corev1.ConditionTrue))
+				Expect(condition.Reason).To(Equal(migrations.Conflict))
+				Expect(condition.Category).To(Equal(migrations.Critical))
+				Expect(condition.Message).To(ContainSubstring(childMigrationName))
+			})
+		})
+
 		Context("Naming length constraints", func() {
 			It("should respect naming length constraints for namespaced plans", func() {
 				name := strings.Repeat("a", kvalidation.DNS1123SubdomainMaxLength)
@@ -207,10 +245,6 @@ var _ = Describe("MultiNamespaceStorageMigration controller", func() {
 				Expect(reconciler.Client.Create(ctx, multinsPlan)).To(Succeed())
 				Expect(reconciler.Client.Create(ctx, multinsMigration)).To(Succeed())
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{
-					NamespacedName: nn,
-				})
-				Expect(err).NotTo(HaveOccurred())
-				_, err = reconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: nn,
 				})
 				Expect(err).NotTo(HaveOccurred())
@@ -281,14 +315,8 @@ var _ = Describe("MultiNamespaceStorageMigration controller", func() {
 				Expect(reconciler.Client.Create(ctx, multiPlan)).To(Succeed())
 				Expect(reconciler.Client.Create(ctx, multiMigration)).To(Succeed())
 
-				By("Reconciling to add finalizer")
+				By("Reconciling to add finalizer and create child migration in cross namespace")
 				_, err := reconciler.Reconcile(ctx, reconcile.Request{
-					NamespacedName: types.NamespacedName{Name: migrationName, Namespace: parentNamespace},
-				})
-				Expect(err).NotTo(HaveOccurred())
-
-				By("Reconciling to create child migration in cross namespace")
-				_, err = reconciler.Reconcile(ctx, reconcile.Request{
 					NamespacedName: types.NamespacedName{Name: migrationName, Namespace: parentNamespace},
 				})
 				Expect(err).NotTo(HaveOccurred())
