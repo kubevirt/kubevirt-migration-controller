@@ -18,6 +18,7 @@ package multinamespacestoragemig
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"path"
 	"slices"
@@ -27,7 +28,6 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
-	"k8s.io/apimachinery/pkg/api/errors"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -44,6 +44,11 @@ import (
 	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
 	componenthelpers "kubevirt.io/kubevirt-migration-controller/pkg/component-helpers"
 )
+
+// errConflictingMigration is a sentinel returned by createNamespacedMigration when an
+// existing VirtualMachineStorageMigration with the target name was not created by any
+// MultiNamespaceVirtualMachineStorageMigration controller and therefore must not be deleted.
+var errConflictingMigration = stderrors.New("conflicting unowned migration")
 
 const (
 	multiNamespaceStorageMigrationNameLabel      = "migrations.kubevirt.io/multi-namespace-storage-mig-name"
@@ -78,7 +83,7 @@ func (r *MultiNamespaceStorageMigrationReconciler) Reconcile(ctx context.Context
 	migration := &migrations.MultiNamespaceVirtualMachineStorageMigration{}
 
 	if err := r.Get(ctx, req.NamespacedName, migration); err != nil {
-		if errors.IsNotFound(err) {
+		if k8serrors.IsNotFound(err) {
 			return reconcile.Result{}, nil
 		}
 		return reconcile.Result{}, err
@@ -95,7 +100,6 @@ func (r *MultiNamespaceStorageMigrationReconciler) Reconcile(ctx context.Context
 		if err := r.Update(ctx, migration); err != nil {
 			return reconcile.Result{}, err
 		}
-		return reconcile.Result{}, nil
 	}
 
 	origMigration := migration.DeepCopy()
@@ -113,6 +117,8 @@ func (r *MultiNamespaceStorageMigrationReconciler) Reconcile(ctx context.Context
 
 	if plan != nil {
 		migration.Status.DeleteCondition(migrations.InvalidPlanRef)
+		// Clear so it is re-evaluated inside the migration loop below.
+		migration.Status.DeleteCondition(migrations.ConflictingMigration)
 	} else {
 		migration.Status.SetCondition(migrations.Condition{
 			Type:     migrations.InvalidPlanRef,
@@ -136,18 +142,35 @@ func (r *MultiNamespaceStorageMigrationReconciler) Reconcile(ctx context.Context
 			if virtualMachineStorageMigration == nil {
 				log.V(5).Info("Creating virtual machine storage migration", "namespace", namespacePlan.Name)
 				if err := r.createNamespacedMigration(ctx, plan.Name, migration, &namespacePlan); err != nil {
-					return reconcile.Result{}, err
+					if !stderrors.Is(err, errConflictingMigration) {
+						return reconcile.Result{}, err
+					}
+					break
 				}
 				return reconcile.Result{}, nil
 			} else if !r.isChildOwnedByMigration(virtualMachineStorageMigration, migration) {
-				log.V(3).Info("Deleting stale virtual machine storage migration", "namespace", namespacePlan.Name, "childUID", virtualMachineStorageMigration.Labels[multiNamespaceStorageMigrationUIDLabel], "parentUID", migration.UID)
-				if err := r.deleteChildMigration(ctx, virtualMachineStorageMigration); err != nil {
-					return reconcile.Result{}, err
+				if r.isOwnedByAnyMultiNamespaceMigration(virtualMachineStorageMigration) {
+					log.V(3).Info("Deleting stale virtual machine storage migration", "namespace", namespacePlan.Name, "childUID", virtualMachineStorageMigration.Labels[multiNamespaceStorageMigrationUIDLabel], "parentUID", migration.UID)
+					if err := r.deleteChildMigration(ctx, virtualMachineStorageMigration); err != nil {
+						return reconcile.Result{}, err
+					}
+					if err := r.createNamespacedMigration(ctx, plan.Name, migration, &namespacePlan); err != nil {
+						if !stderrors.Is(err, errConflictingMigration) {
+							return reconcile.Result{}, err
+						}
+						break
+					}
+					return reconcile.Result{}, nil
 				}
-				if err := r.createNamespacedMigration(ctx, plan.Name, migration, &namespacePlan); err != nil {
-					return reconcile.Result{}, err
-				}
-				return reconcile.Result{}, nil
+				log.V(3).Info("Found unowned VirtualMachineStorageMigration with conflicting name", "name", virtualMachineStorageMigration.Name, "namespace", namespacePlan.Name)
+				migration.Status.SetCondition(migrations.Condition{
+					Type:     migrations.ConflictingMigration,
+					Status:   corev1.ConditionTrue,
+					Reason:   migrations.Conflict,
+					Category: migrations.Critical,
+					Message:  fmt.Sprintf("A VirtualMachineStorageMigration %q already exists in namespace %q and was not created by this controller.", virtualMachineStorageMigration.Name, namespacePlan.Name),
+				})
+				break
 			} else {
 				r.updateNamespaceMigrationStatus(migration, virtualMachineStorageMigration, namespacePlan.Name)
 			}
@@ -179,7 +202,7 @@ func (r *MultiNamespaceStorageMigrationReconciler) updateNamespaceMigrationStatu
 func (r *MultiNamespaceStorageMigrationReconciler) getVirtualMachineStorageMigration(ctx context.Context, plan *migrations.MultiNamespaceVirtualMachineStorageMigrationPlan, namespace *migrations.VirtualMachineStorageMigrationPlanNamespaceSpec) (*migrations.VirtualMachineStorageMigration, error) {
 	virtualMachineStorageMigration := &migrations.VirtualMachineStorageMigration{}
 	if err := r.Client.Get(ctx, types.NamespacedName{Name: migrations.GetNamespacedPlanName(plan.Name, namespace.Name), Namespace: namespace.Name}, virtualMachineStorageMigration); err != nil {
-		if errors.IsNotFound(err) {
+		if k8serrors.IsNotFound(err) {
 			return nil, nil
 		}
 		return nil, err
@@ -236,6 +259,14 @@ func (r *MultiNamespaceStorageMigrationReconciler) isChildOwnedByMigration(child
 	return false
 }
 
+// isOwnedByAnyMultiNamespaceMigration returns true if the child carries the UID label,
+// meaning it was created by some MultiNamespaceVirtualMachineStorageMigration controller
+// (possibly a now-deleted parent). Such orphaned children are safe to replace.
+func (r *MultiNamespaceStorageMigrationReconciler) isOwnedByAnyMultiNamespaceMigration(child *migrations.VirtualMachineStorageMigration) bool {
+	_, hasLabel := child.Labels[multiNamespaceStorageMigrationUIDLabel]
+	return hasLabel
+}
+
 func (r *MultiNamespaceStorageMigrationReconciler) createNamespacedMigration(ctx context.Context, planName string, migration *migrations.MultiNamespaceVirtualMachineStorageMigration, namespacePlan *migrations.VirtualMachineStorageMigrationPlanNamespaceSpec) error {
 	virtualMachineStorageMigration := &migrations.VirtualMachineStorageMigration{
 		ObjectMeta: metav1.ObjectMeta{
@@ -266,6 +297,19 @@ func (r *MultiNamespaceStorageMigrationReconciler) createNamespacedMigration(ctx
 		}
 		if r.isChildOwnedByMigration(existing, migration) {
 			return nil
+		}
+		if !r.isOwnedByAnyMultiNamespaceMigration(existing) {
+			// The existing migration was not created by any MultiNamespaceVirtualMachineStorageMigration
+			// controller, so deleting it would be unsafe.
+			r.Log.V(3).Info("Found unowned VirtualMachineStorageMigration with conflicting name", "name", existing.Name, "namespace", existing.Namespace)
+			migration.Status.SetCondition(migrations.Condition{
+				Type:     migrations.ConflictingMigration,
+				Status:   corev1.ConditionTrue,
+				Reason:   migrations.Conflict,
+				Category: migrations.Critical,
+				Message:  fmt.Sprintf("A VirtualMachineStorageMigration %q already exists in namespace %q and was not created by this controller.", existing.Name, existing.Namespace),
+			})
+			return errConflictingMigration
 		}
 		if err := r.deleteChildMigration(ctx, existing); err != nil {
 			return err
@@ -315,7 +359,7 @@ func (r *MultiNamespaceStorageMigrationReconciler) getVirtualMachineStorageMigra
 	}
 	multiNamespaceMigration := &migrations.MultiNamespaceVirtualMachineStorageMigration{}
 	if err := r.Get(ctx, types.NamespacedName{Name: nameLabel, Namespace: namespaceLabel}, multiNamespaceMigration); err != nil {
-		if !errors.IsNotFound(err) {
+		if !k8serrors.IsNotFound(err) {
 			r.Log.Error(err, "failed to get MultiNamespaceVirtualMachineStorageMigration for VirtualMachineStorageMigration", "multi-namespace-storage-mig-name", nameLabel, "multi-namespace-storage-mig-namespace", namespaceLabel)
 		}
 		return nil
