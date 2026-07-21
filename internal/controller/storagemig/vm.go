@@ -51,6 +51,23 @@ func (t *Task) canVMStorageMigrate(ctx context.Context, vmName string) (bool, er
 	return true, nil
 }
 
+// recordOfflineSourcePVCs stores source PVC identity in migration status before the VM volumes are swapped.
+func (t *Task) recordOfflineSourcePVCs(planVM migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine) {
+	for _, info := range t.Owner.Status.OfflineMigrations {
+		if info.VMName == planVM.Name {
+			return
+		}
+	}
+	info := migrations.OfflineMigrationInfo{VMName: planVM.Name}
+	for _, src := range planVM.SourcePVCs {
+		info.SourcePVCs = append(info.SourcePVCs, migrations.OfflineMigrationSourcePVC{
+			Name:      src.Name,
+			Namespace: src.Namespace,
+		})
+	}
+	t.Owner.Status.OfflineMigrations = append(t.Owner.Status.OfflineMigrations, info)
+}
+
 func (t *Task) offlineMigrateVM(ctx context.Context, planVM migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine) error {
 	vm := &virtv1.VirtualMachine{}
 	if err := t.Client.Get(ctx, types.NamespacedName{Namespace: t.Owner.Namespace, Name: planVM.Name}, vm); err != nil {
@@ -61,6 +78,10 @@ func (t *Task) offlineMigrateVM(ctx context.Context, planVM migrations.VirtualMa
 	} else if message != "" {
 		return errors.New(message)
 	}
+
+	// Record source PVCs before updating the VM spec so deleteSource can reliably find them
+	// even after the VM volumes are swapped to point at the target PVCs.
+	t.recordOfflineSourcePVCs(planVM)
 
 	t.Log.V(3).Info("Updating VM for offline storage migration", "vm", vm.Name)
 	if err := t.updateVMForOfflineStorageMigration(ctx, vm, planVM); err != nil {
@@ -375,7 +396,7 @@ func (t *Task) refreshCompletedVirtualMachines(ctx context.Context) (bool, error
 	return false, nil
 }
 
-// isOfflineMigrationCompleted returns true when all target DataVolumes for the VM have phase Succeeded or WaitForFirstConsumer.
+// isOfflineMigrationCompleted returns true when all target DataVolumes for the VM have phase Succeeded.
 func (t *Task) isOfflineMigrationCompleted(ctx context.Context, vmName string) (bool, error) {
 	planVM := t.getPlanVMByName(vmName)
 	if planVM == nil {
@@ -389,11 +410,48 @@ func (t *Task) isOfflineMigrationCompleted(ctx context.Context, vmName string) (
 			}
 			return false, err
 		}
-		if dv.Status.Phase != cdiv1.Succeeded && dv.Status.Phase != cdiv1.WaitForFirstConsumer {
+		if dv.Status.Phase != cdiv1.Succeeded {
 			return false, nil
 		}
 	}
 	return true, nil
+}
+
+// isOfflineMigrationWaitingForFirstConsumer returns true when any target DataVolume for the VM
+// is waiting for a consumer before population/cloning can begin. That covers both classic CDI
+// WaitForFirstConsumer and populator-based PendingPopulation phases used with WFFC storage classes.
+// Target DV names are read from the plan spec (immutable during migration) rather than plan status,
+// which can transiently drop the VM. A NotFound target DV is skipped; if every target is NotFound
+// (DV not created yet or not visible), this returns false and the next PollReQ re-evaluates — so
+// OfflineMigrationWaiting may appear a short time after migration creation on slow clusters.
+func (t *Task) isOfflineMigrationWaitingForFirstConsumer(ctx context.Context, vmName string) (bool, error) {
+	if t.Plan == nil {
+		return false, nil
+	}
+	for _, specVM := range t.Plan.Spec.VirtualMachines {
+		if specVM.Name != vmName {
+			continue
+		}
+		for _, targetPVC := range specVM.TargetMigrationPVCs {
+			if targetPVC.DestinationPVC.Name == nil || *targetPVC.DestinationPVC.Name == "" {
+				continue
+			}
+			dv := &cdiv1.DataVolume{}
+			if err := t.Client.Get(ctx, types.NamespacedName{Namespace: t.Owner.Namespace, Name: *targetPVC.DestinationPVC.Name}, dv); err != nil {
+				if k8serrors.IsNotFound(err) {
+					continue
+				}
+				return false, err
+			}
+			// CDI uses WaitForFirstConsumer without populators, and PendingPopulation when
+			// populators populate a WFFC claim. Both mean the halted VM must be started first.
+			if dv.Status.Phase == cdiv1.WaitForFirstConsumer || dv.Status.Phase == cdiv1.PendingPopulation {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	return false, nil
 }
 
 // getPlanVMByName returns the plan VM status for the given VM name from ReadyMigrations or InProgressMigrations.

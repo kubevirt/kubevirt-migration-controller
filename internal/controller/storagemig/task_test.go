@@ -487,8 +487,8 @@ var _ = Describe("StorageMigration tasks", func() {
 		})
 	})
 
-	Context("getSourcePVCsForCompletedMigrations", func() {
-		It("returns only source PVCs from CompletedMigrations for VMs in the completed list", func() {
+	Context("gatherSourcePVCsForCompletedMigrations", func() {
+		It("returns live-migration source PVCs from plan.CompletedMigrations for VMs in the completed list", func() {
 			sourcePVCCompleted := migrations.VirtualMachineStorageMigrationPlanSourcePVC{
 				VolumeName: "vol-completed",
 				Name:       "pvc-completed",
@@ -523,16 +523,18 @@ var _ = Describe("StorageMigration tasks", func() {
 				},
 			}
 			task := &Task{
-				Plan: plan,
-				Log:  logf.Log.WithName("test"),
+				Plan:  plan,
+				Owner: &migrations.VirtualMachineStorageMigration{},
+				Log:   logf.Log.WithName("test"),
 			}
-			pvcs := task.getSourcePVCsForCompletedMigrations([]string{"vm-completed"})
+			pvcs, missing := task.gatherSourcePVCsForCompletedMigrations([]string{"vm-completed"})
+			Expect(missing).To(BeZero())
 			Expect(pvcs).To(HaveLen(1))
 			Expect(pvcs[0].Name).To(Equal("pvc-completed"))
 			Expect(pvcs[0].Namespace).To(Equal(testutils.TestNamespace))
 		})
 
-		It("returns empty when completedVMNames is empty", func() {
+		It("returns empty with zero missing when completedVMNames is empty", func() {
 			plan := &migrations.VirtualMachineStorageMigrationPlan{
 				ObjectMeta: metav1.ObjectMeta{Name: "plan", Namespace: testutils.TestNamespace},
 				Status: migrations.VirtualMachineStorageMigrationPlanStatus{
@@ -546,17 +548,20 @@ var _ = Describe("StorageMigration tasks", func() {
 					},
 				},
 			}
-			task := &Task{Plan: plan, Log: logf.Log.WithName("test")}
-			pvcs := task.getSourcePVCsForCompletedMigrations(nil)
+			task := &Task{Plan: plan, Owner: &migrations.VirtualMachineStorageMigration{}, Log: logf.Log.WithName("test")}
+			pvcs, missing := task.gatherSourcePVCsForCompletedMigrations(nil)
+			Expect(missing).To(BeZero())
 			Expect(pvcs).To(BeEmpty())
-			pvcs = task.getSourcePVCsForCompletedMigrations([]string{})
+			pvcs, missing = task.gatherSourcePVCsForCompletedMigrations([]string{})
+			Expect(missing).To(BeZero())
 			Expect(pvcs).To(BeEmpty())
 		})
 
-		It("returns empty when only ReadyMigrations and InProgressMigrations have VMs (no completed match)", func() {
+		It("reports missing count when live-migration VM is not yet in plan.CompletedMigrations", func() {
 			plan := &migrations.VirtualMachineStorageMigrationPlan{
 				ObjectMeta: metav1.ObjectMeta{Name: "plan", Namespace: testutils.TestNamespace},
 				Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+					// vm-ready and vm-inprogress are not in CompletedMigrations yet
 					ReadyMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
 						{
 							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-ready"},
@@ -565,20 +570,83 @@ var _ = Describe("StorageMigration tasks", func() {
 							},
 						},
 					},
-					InProgressMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
-						{
-							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-inprogress"},
-							SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
-								{Name: "pvc-inprogress", Namespace: testutils.TestNamespace},
-							},
-						},
-					},
 					CompletedMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{},
 				},
 			}
-			task := &Task{Plan: plan, Log: logf.Log.WithName("test")}
-			// Passing ready/inprogress VM names does not return their PVCs because only CompletedMigrations is consulted.
-			pvcs := task.getSourcePVCsForCompletedMigrations([]string{"vm-ready", "vm-inprogress"})
+			task := &Task{Plan: plan, Owner: &migrations.VirtualMachineStorageMigration{}, Log: logf.Log.WithName("test")}
+			// Live-migration VM not in plan CompletedMigrations → missingCount = 1
+			pvcs, missing := task.gatherSourcePVCsForCompletedMigrations([]string{"vm-ready"})
+			Expect(missing).To(Equal(1))
+			Expect(pvcs).To(BeEmpty())
+		})
+
+		It("reports missing count when live-migration VM is in plan.CompletedMigrations but SourcePVCs is empty", func() {
+			plan := &migrations.VirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: "plan", Namespace: testutils.TestNamespace},
+				Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+					CompletedMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "vm-empty-src"},
+							SourcePVCs: nil,
+						},
+					},
+				},
+			}
+			task := &Task{Plan: plan, Owner: &migrations.VirtualMachineStorageMigration{}, Log: logf.Log.WithName("test")}
+			pvcs, missing := task.gatherSourcePVCsForCompletedMigrations([]string{"vm-empty-src"})
+			Expect(missing).To(Equal(1))
+			Expect(pvcs).To(BeEmpty())
+		})
+
+		It("returns offline migration source PVCs from migration status without needing plan", func() {
+			plan := &migrations.VirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: "plan", Namespace: testutils.TestNamespace},
+				Status:     migrations.VirtualMachineStorageMigrationPlanStatus{}, // plan has nothing
+			}
+			task := &Task{
+				Plan: plan,
+				Owner: &migrations.VirtualMachineStorageMigration{
+					Status: migrations.VirtualMachineStorageMigrationStatus{
+						OfflineMigrations: []migrations.OfflineMigrationInfo{
+							{
+								VMName: "vm-offline",
+								SourcePVCs: []migrations.OfflineMigrationSourcePVC{
+									{Name: "pvc-source", Namespace: testutils.TestNamespace},
+								},
+							},
+						},
+					},
+				},
+				Log: logf.Log.WithName("test"),
+			}
+			pvcs, missing := task.gatherSourcePVCsForCompletedMigrations([]string{"vm-offline"})
+			Expect(missing).To(BeZero())
+			Expect(pvcs).To(HaveLen(1))
+			Expect(pvcs[0].Name).To(Equal("pvc-source"))
+			Expect(pvcs[0].Namespace).To(Equal(testutils.TestNamespace))
+		})
+
+		It("reports missing count when offline VM entry has empty SourcePVCs", func() {
+			plan := &migrations.VirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: "plan", Namespace: testutils.TestNamespace},
+				Status:     migrations.VirtualMachineStorageMigrationPlanStatus{},
+			}
+			task := &Task{
+				Plan: plan,
+				Owner: &migrations.VirtualMachineStorageMigration{
+					Status: migrations.VirtualMachineStorageMigrationStatus{
+						OfflineMigrations: []migrations.OfflineMigrationInfo{
+							{
+								VMName:     "vm-offline-empty",
+								SourcePVCs: nil,
+							},
+						},
+					},
+				},
+				Log: logf.Log.WithName("test"),
+			}
+			pvcs, missing := task.gatherSourcePVCsForCompletedMigrations([]string{"vm-offline-empty"})
+			Expect(missing).To(Equal(1))
 			Expect(pvcs).To(BeEmpty())
 		})
 
@@ -602,8 +670,9 @@ var _ = Describe("StorageMigration tasks", func() {
 					},
 				},
 			}
-			task := &Task{Plan: plan, Log: logf.Log.WithName("test")}
-			pvcs := task.getSourcePVCsForCompletedMigrations([]string{"vm-a"})
+			task := &Task{Plan: plan, Owner: &migrations.VirtualMachineStorageMigration{}, Log: logf.Log.WithName("test")}
+			pvcs, missing := task.gatherSourcePVCsForCompletedMigrations([]string{"vm-a"})
+			Expect(missing).To(BeZero())
 			Expect(pvcs).To(HaveLen(1))
 			Expect(pvcs[0].Name).To(Equal("pvc-a"))
 		})
@@ -661,6 +730,7 @@ var _ = Describe("StorageMigration tasks", func() {
 
 			task := &Task{
 				Plan:   plan,
+				Owner:  &migrations.VirtualMachineStorageMigration{},
 				Client: controllerReconciler.Client,
 				Log:    logf.Log.WithName("test"),
 			}
@@ -717,6 +787,7 @@ var _ = Describe("StorageMigration tasks", func() {
 			}
 			task := &Task{
 				Plan:   plan,
+				Owner:  &migrations.VirtualMachineStorageMigration{},
 				Client: controllerReconciler.Client,
 				Log:    logf.Log.WithName("test"),
 			}
@@ -783,6 +854,7 @@ var _ = Describe("StorageMigration tasks", func() {
 			}
 			task := &Task{
 				Plan:   plan,
+				Owner:  &migrations.VirtualMachineStorageMigration{},
 				Client: controllerReconciler.Client,
 				Log:    logf.Log.WithName("test"),
 			}
@@ -831,6 +903,7 @@ var _ = Describe("StorageMigration tasks", func() {
 			}
 			task := &Task{
 				Plan:    plan,
+				Owner:   &migrations.VirtualMachineStorageMigration{},
 				Client:  controllerReconciler.Client,
 				Log:     logf.Log.WithName("test"),
 				Requeue: NoReQ,
