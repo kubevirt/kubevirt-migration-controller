@@ -458,7 +458,7 @@ var _ = Describe("StorageMigration offline completion and getPlanVMByName", func
 		Expect(completed).To(BeTrue())
 	})
 
-	It("isOfflineMigrationCompleted returns true when target DV is in WaitForFirstConsumer phase", func() {
+	It("isOfflineMigrationCompleted returns false when target DV is in WaitForFirstConsumer phase", func() {
 		t := &Task{
 			Client: k8sClient,
 			Scheme: k8sClient.Scheme(),
@@ -497,7 +497,143 @@ var _ = Describe("StorageMigration offline completion and getPlanVMByName", func
 		Expect(k8sClient.Status().Update(ctx, dv)).To(Succeed())
 		completed, err := t.isOfflineMigrationCompleted(ctx, testVM)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(completed).To(BeTrue())
+		Expect(completed).To(BeFalse())
+	})
+
+	DescribeTable("isOfflineMigrationWaitingForFirstConsumer", func(dvPhase cdiv1.DataVolumePhase, expected bool) {
+		t := &Task{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Log:    logf.Log.WithName("test"),
+			Owner:  &migrations.VirtualMachineStorageMigration{ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace}},
+			Plan: &migrations.VirtualMachineStorageMigrationPlan{
+				Spec: migrations.VirtualMachineStorageMigrationPlanSpec{
+					VirtualMachines: []migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+						{
+							Name: testVM,
+							TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+								{DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{Name: ptr.To(testTargetDV)}},
+							},
+						},
+					},
+				},
+			},
+		}
+		dv := &cdiv1.DataVolume{
+			ObjectMeta: metav1.ObjectMeta{Name: testTargetDV, Namespace: testNamespace},
+			Spec: cdiv1.DataVolumeSpec{
+				Source: &cdiv1.DataVolumeSource{Blank: &cdiv1.DataVolumeBlankImage{}},
+				Storage: &cdiv1.StorageSpec{
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, dv)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testTargetDV}, dv)).To(Succeed())
+		dv.Status.Phase = dvPhase
+		Expect(k8sClient.Status().Update(ctx, dv)).To(Succeed())
+		waiting, err := t.isOfflineMigrationWaitingForFirstConsumer(ctx, testVM)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(waiting).To(Equal(expected))
+	},
+		Entry("returns true when target DV is in WaitForFirstConsumer phase", cdiv1.WaitForFirstConsumer, true),
+		Entry("returns true when target DV is in PendingPopulation phase", cdiv1.PendingPopulation, true),
+		Entry("returns false when target DV is Succeeded", cdiv1.Succeeded, false),
+	)
+
+	It("isOfflineMigrationCompleted returns false when target DV is in PendingPopulation phase", func() {
+		t := &Task{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Log:    logf.Log.WithName("test"),
+			Owner:  &migrations.VirtualMachineStorageMigration{ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace}},
+			Plan: &migrations.VirtualMachineStorageMigrationPlan{
+				Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+					ReadyMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+						{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+								Name: testVM,
+								TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+									{DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{Name: ptr.To(testTargetDV)}},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+		dv := &cdiv1.DataVolume{
+			ObjectMeta: metav1.ObjectMeta{Name: testTargetDV, Namespace: testNamespace},
+			Spec: cdiv1.DataVolumeSpec{
+				Source: &cdiv1.DataVolumeSource{Blank: &cdiv1.DataVolumeBlankImage{}},
+				Storage: &cdiv1.StorageSpec{
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, dv)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testTargetDV}, dv)).To(Succeed())
+		dv.Status.Phase = cdiv1.PendingPopulation
+		Expect(k8sClient.Status().Update(ctx, dv)).To(Succeed())
+		completed, err := t.isOfflineMigrationCompleted(ctx, testVM)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(completed).To(BeFalse())
+	})
+
+	It("isOfflineMigrationWaitingForFirstConsumer returns true even when plan status has no VM (WFFC race)", func() {
+		t := &Task{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Log:    logf.Log.WithName("test"),
+			Owner:  &migrations.VirtualMachineStorageMigration{ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace}},
+			Plan: &migrations.VirtualMachineStorageMigrationPlan{
+				Spec: migrations.VirtualMachineStorageMigrationPlanSpec{
+					VirtualMachines: []migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+						{
+							Name: testVM,
+							TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+								{DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{Name: ptr.To(testTargetDV)}},
+							},
+						},
+					},
+				},
+				Status: migrations.VirtualMachineStorageMigrationPlanStatus{},
+			},
+		}
+		dv := &cdiv1.DataVolume{
+			ObjectMeta: metav1.ObjectMeta{Name: testTargetDV, Namespace: testNamespace},
+			Spec: cdiv1.DataVolumeSpec{
+				Source: &cdiv1.DataVolumeSource{Blank: &cdiv1.DataVolumeBlankImage{}},
+				Storage: &cdiv1.StorageSpec{
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, dv)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: testNamespace, Name: testTargetDV}, dv)).To(Succeed())
+		dv.Status.Phase = cdiv1.WaitForFirstConsumer
+		Expect(k8sClient.Status().Update(ctx, dv)).To(Succeed())
+		waiting, err := t.isOfflineMigrationWaitingForFirstConsumer(ctx, testVM)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(waiting).To(BeTrue())
+	})
+
+	It("isOfflineMigrationWaitingForFirstConsumer returns false when VM is not in plan spec", func() {
+		t := &Task{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Owner:  &migrations.VirtualMachineStorageMigration{ObjectMeta: metav1.ObjectMeta{Namespace: testNamespace}},
+			Plan:   &migrations.VirtualMachineStorageMigrationPlan{},
+		}
+		waiting, err := t.isOfflineMigrationWaitingForFirstConsumer(ctx, "no-such-vm")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(waiting).To(BeFalse())
 	})
 
 	It("isOfflineMigrationCompleted returns false when plan VM is not found", func() {

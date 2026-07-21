@@ -23,6 +23,7 @@ import (
 	expect "github.com/google/goexpect"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/gstruct"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	corev1 "k8s.io/api/core/v1"
@@ -96,6 +97,21 @@ func setupNamespaceAndStorageClassHelper(namespacePrefix string) (*corev1.Namesp
 	Expect(sc).NotTo(BeEmpty(), "cluster must have at least one storage class")
 	copyProxyCAHelper(ns.Name)
 	return ns, sc
+}
+
+// findWaitForFirstConsumerStorageClass returns an existing WFFC storage class.
+// kubevirtci clusters always have one; fail the test if the cluster does not.
+func findWaitForFirstConsumerStorageClass() string {
+	scList := &storagev1.StorageClassList{}
+	Expect(c.List(context.TODO(), scList, &client.ListOptions{})).To(Succeed())
+	for i := range scList.Items {
+		sc := &scList.Items[i]
+		if sc.VolumeBindingMode != nil && *sc.VolumeBindingMode == storagev1.VolumeBindingWaitForFirstConsumer {
+			return sc.Name
+		}
+	}
+	Fail("cluster must have a WaitForFirstConsumer storage class")
+	return ""
 }
 
 // cleanupNamespaceHelper deletes the test namespace
@@ -936,6 +952,174 @@ var _ = Describe("MigPlan", func() {
 				err = c.Get(context.TODO(), client.ObjectKeyFromObject(dataPVC), dataPVC, &client.GetOptions{})
 				g.Expect(k8serrors.IsNotFound(err)).To(BeTrue(), "data PVC %s should be deleted", originalDataPVC)
 			}, 1*time.Minute, 5*time.Second).Should(Succeed())
+		})
+	})
+
+	Context("offline migration with deleteSource and WaitForFirstConsumer target storage class", func() {
+		const (
+			planName      = "e2e-wffc-delete-plan"
+			migrationName = "e2e-wffc-delete-migration"
+			volumeName    = "disk0"
+		)
+
+		var (
+			namespace        *corev1.Namespace
+			storageClassName string
+			wffcSCName       string
+		)
+
+		BeforeEach(func() {
+			namespace, storageClassName = setupNamespaceAndStorageClassHelper("e2e-wffc-del-")
+
+			By("Finding an existing WaitForFirstConsumer storage class")
+			wffcSCName = findWaitForFirstConsumerStorageClass()
+		})
+
+		AfterEach(func() {
+			By("Deleting migration if present")
+			mig := &migrations.VirtualMachineStorageMigration{
+				ObjectMeta: metav1.ObjectMeta{Name: migrationName, Namespace: namespace.Name},
+			}
+			if err := c.Delete(context.TODO(), mig, &client.DeleteOptions{}); err != nil && !k8serrors.IsNotFound(err) {
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			By("Deleting plan if present")
+			plan := &migrations.VirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: planName, Namespace: namespace.Name},
+			}
+			if err := c.Delete(context.TODO(), plan, &client.DeleteOptions{}); err != nil && !k8serrors.IsNotFound(err) {
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			cleanupNamespaceHelper(namespace)
+		})
+
+		It("should set OfflineMigrationWaiting and keep sources for WFFC targets", func() {
+			By("Creating a halted VM with a Cirros source DataVolume on the default storage class")
+			dv := libdv.NewDataVolume(
+				libdv.WithNamespace(namespace.Name),
+				libdv.WithRegistryURLSourceAndCustomCA(
+					cd.DataVolumeImportUrlForContainerDisk(cd.ContainerDiskCirros), registryProxyCACertName),
+				libdv.WithStorage(
+					libdv.StorageWithStorageClass(storageClassName),
+					libdv.StorageWithVolumeSize(cd.CirrosVolumeSize),
+					libdv.StorageWithFilesystemVolumeMode(),
+				),
+			)
+
+			vmi := libvmi.New(
+				libvmi.WithNamespace(namespace.Name),
+				libvmi.WithInterface(libvmi.InterfaceDeviceWithMasqueradeBinding()),
+				libvmi.WithNetwork(virtv1.DefaultPodNetwork()),
+				libvmi.WithMemoryRequest("128Mi"),
+				libvmi.WithDataVolume(volumeName, dv.Name),
+				libvmi.WithCloudInitNoCloud(libvmifact.WithDummyCloudForFastBoot()),
+			)
+			vm := libvmi.NewVirtualMachine(vmi,
+				libvmi.WithRunStrategy(virtv1.RunStrategyHalted),
+				libvmi.WithDataVolumeTemplate(dv),
+			)
+			vm.Namespace = dv.Namespace
+			Expect(c.Create(context.Background(), vm, &client.CreateOptions{})).To(Succeed())
+
+			By("Waiting for source DataVolume to reach Succeeded phase")
+			sourceDVName := dv.Name
+			Eventually(func(g Gomega) {
+				sourceDV := &cdiv1.DataVolume{
+					ObjectMeta: metav1.ObjectMeta{Name: sourceDVName, Namespace: namespace.Name},
+				}
+				g.Expect(c.Get(context.TODO(), client.ObjectKeyFromObject(sourceDV), sourceDV, &client.GetOptions{})).To(Succeed())
+				g.Expect(sourceDV.Status.Phase).To(Equal(cdiv1.Succeeded))
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("Creating migration plan with deleteSource retention policy targeting the WFFC storage class")
+			targetPVCName := "target-wffc-pvc"
+			plan := &migrations.VirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{Name: planName, Namespace: namespace.Name},
+				Spec: migrations.VirtualMachineStorageMigrationPlanSpec{
+					RetentionPolicy: ptr.To(migrations.RetentionPolicyDeleteSource),
+					VirtualMachines: []migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+						{
+							Name: vm.Name,
+							TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+								{
+									VolumeName: volumeName,
+									DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+										Name:             ptr.To(targetPVCName),
+										StorageClassName: &wffcSCName,
+										AccessModes: []migrations.VirtualMachineStorageMigrationPlanAccessMode{
+											migrations.VirtualMachineStorageMigrationPlanAccessMode(corev1.ReadWriteOnce),
+										},
+										VolumeMode: ptr.To(corev1.PersistentVolumeMode("Filesystem")),
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+			Expect(c.Create(context.TODO(), plan, &client.CreateOptions{})).To(Succeed())
+
+			By("Waiting for plan to be ready")
+			Eventually(func(g Gomega) {
+				p := &migrations.VirtualMachineStorageMigrationPlan{
+					ObjectMeta: metav1.ObjectMeta{Name: planName, Namespace: namespace.Name},
+				}
+				g.Expect(c.Get(context.TODO(), client.ObjectKeyFromObject(p), p, &client.GetOptions{})).To(Succeed())
+				cond := p.Status.FindCondition(migrations.Ready)
+				g.Expect(cond).NotTo(BeNil(), "plan has no Ready condition")
+				g.Expect(cond.Status).To(Equal(corev1.ConditionTrue), "plan Ready condition: %s", cond.Message)
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("Creating migration")
+			migration := &migrations.VirtualMachineStorageMigration{
+				ObjectMeta: metav1.ObjectMeta{Name: migrationName, Namespace: namespace.Name},
+				Spec: migrations.VirtualMachineStorageMigrationSpec{
+					VirtualMachineStorageMigrationPlanRef: &corev1.ObjectReference{
+						Name:      planName,
+						Namespace: namespace.Name,
+					},
+				},
+			}
+			Expect(c.Create(context.TODO(), migration, &client.CreateOptions{})).To(Succeed())
+
+			By("Waiting for OfflineMigrationWaiting condition on the migration")
+			Eventually(func(g Gomega) []migrations.Condition {
+				m := &migrations.VirtualMachineStorageMigration{
+					ObjectMeta: metav1.ObjectMeta{Name: migrationName, Namespace: namespace.Name},
+				}
+				g.Expect(c.Get(context.TODO(), client.ObjectKeyFromObject(m), m, &client.GetOptions{})).To(Succeed())
+				return m.Status.Conditions.List
+			}, 5*time.Minute, 5*time.Second).Should(ContainElement(gstruct.MatchFields(gstruct.IgnoreExtras, gstruct.Fields{
+				"Type":   Equal(migrations.OfflineMigrationWaiting),
+				"Status": Equal(corev1.ConditionTrue),
+			})))
+
+			By("Waiting for OfflineMigrationWaiting condition on the plan")
+			Eventually(func(g Gomega) []migrations.Condition {
+				p := &migrations.VirtualMachineStorageMigrationPlan{
+					ObjectMeta: metav1.ObjectMeta{Name: planName, Namespace: namespace.Name},
+				}
+				g.Expect(c.Get(context.TODO(), client.ObjectKeyFromObject(p), p, &client.GetOptions{})).To(Succeed())
+				return p.Status.Conditions.List
+			}, 5*time.Minute, 5*time.Second).Should(ContainElement(gstruct.MatchFields(gstruct.IgnoreExtras, gstruct.Fields{
+				"Type":    Equal(migrations.OfflineMigrationWaiting),
+				"Status":  Equal(corev1.ConditionTrue),
+				"Message": ContainSubstring("Start the following VMs"),
+			})))
+
+			By("Verifying source volumes are not deleted while waiting for first consumer")
+			sourceDV := &cdiv1.DataVolume{
+				ObjectMeta: metav1.ObjectMeta{Name: sourceDVName, Namespace: namespace.Name},
+			}
+			Expect(c.Get(context.TODO(), client.ObjectKeyFromObject(sourceDV), sourceDV, &client.GetOptions{})).To(Succeed(),
+				"source DataVolume must not be deleted while migration waits for first consumer")
+			sourcePVC := &corev1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{Name: sourceDVName, Namespace: namespace.Name},
+			}
+			Expect(c.Get(context.TODO(), client.ObjectKeyFromObject(sourcePVC), sourcePVC, &client.GetOptions{})).To(Succeed(),
+				"source PVC must not be deleted while migration waits for first consumer")
 		})
 	})
 
