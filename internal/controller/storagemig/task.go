@@ -215,14 +215,17 @@ func (t *Task) handleWaitForLiveMigrationToCompletePhase(ctx context.Context) er
 		}
 		if !completed {
 			runningMigrations = append(runningMigrations, vm)
-			if !offline {
-				progress, err := t.getLastObservedProgressPercent(ctx, vm.Name, t.Owner.Namespace)
-				if err != nil {
-					return err
-				}
-				if progress != "" {
-					runningMigrations[len(runningMigrations)-1].Progress = progress
-				}
+			var progress string
+			if offline {
+				progress, err = t.getOfflineMigrationProgress(ctx, vm.Name)
+			} else {
+				progress, err = t.getLastObservedProgressPercent(ctx, vm.Name, t.Owner.Namespace)
+			}
+			if err != nil {
+				return err
+			}
+			if progress != "" {
+				runningMigrations[len(runningMigrations)-1].Progress = progress
 			}
 			continue
 		}
