@@ -19,23 +19,26 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 
 # Function to handle cleanup
 cleanup() {
-  $kubectl delete -f "${REPO_ROOT}/nginx-proxy/nginx-ca.yaml"
-  $kubectl delete -f "${REPO_ROOT}/nginx-proxy/nginx-cm.yaml"
-  $kubectl delete -f "${REPO_ROOT}/nginx-proxy/nginx-secret.yaml"
-  $kubectl delete -f "${REPO_ROOT}/nginx-proxy/nginx-svc.yaml"
-  $kubectl delete -f "${REPO_ROOT}/nginx-proxy/nginx-deployment.yaml"
+  if [ "${CREATED_NGINX_PROXY}" = "true" ]; then
+    $kubectl delete namespace nginx-proxy --ignore-not-found
+  fi
 }
 
 
-# deploy nginx registry proxy in the default namespace
-# so we can access the same container over and over
-# using the proxy
+# Deploy nginx registry proxy into the nginx-proxy namespace if not already
+# present (cluster-sync deploys it, but run-e2e.sh may be invoked standalone).
 kubectl="${REPO_ROOT}/cluster-up/kubectl.sh"
-$kubectl apply -f "${REPO_ROOT}/nginx-proxy/nginx-ca.yaml"
-$kubectl apply -f "${REPO_ROOT}/nginx-proxy/nginx-cm.yaml"
-$kubectl apply -f "${REPO_ROOT}/nginx-proxy/nginx-secret.yaml"
-$kubectl apply -f "${REPO_ROOT}/nginx-proxy/nginx-svc.yaml"
-$kubectl apply -f "${REPO_ROOT}/nginx-proxy/nginx-deployment.yaml"
+CREATED_NGINX_PROXY=false
+if ! $kubectl get namespace nginx-proxy &> /dev/null; then
+  CREATED_NGINX_PROXY=true
+  $kubectl create namespace nginx-proxy
+  $kubectl apply -f "${REPO_ROOT}/nginx-proxy/nginx-ca.yaml" -n nginx-proxy
+  $kubectl apply -f "${REPO_ROOT}/nginx-proxy/nginx-cm.yaml" -n nginx-proxy
+  $kubectl apply -f "${REPO_ROOT}/nginx-proxy/nginx-secret.yaml" -n nginx-proxy
+  $kubectl apply -f "${REPO_ROOT}/nginx-proxy/nginx-svc.yaml" -n nginx-proxy
+  $kubectl apply -f "${REPO_ROOT}/nginx-proxy/nginx-deployment.yaml" -n nginx-proxy
+  $kubectl rollout status -n nginx-proxy deployment/nginx-registry-proxy --timeout=120s
+fi
 
 trap 'cleanup' EXIT
 
