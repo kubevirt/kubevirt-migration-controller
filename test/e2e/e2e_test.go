@@ -30,8 +30,9 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"kubevirt.io/kubevirt-migration-controller/test/utils"
 	client "sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -115,23 +116,29 @@ var _ = Describe("Manager", Ordered, func() {
 
 	Context("Manager", func() {
 		It("should run successfully", func() {
-			By("validating that the controller pod is running as expected")
-			verifyControllerUp := func(g Gomega) {
-				pods := &corev1.PodList{}
-				err := c.List(context.TODO(), pods,
-					&client.ListOptions{
-						Namespace: *migrationControllerNamespace,
-						LabelSelector: client.MatchingLabelsSelector{
-							Selector: labels.SelectorFromSet(map[string]string{"control-plane": "controller"}),
-						},
-					})
-				Expect(err).NotTo(HaveOccurred(), "Failed to list controller pods")
-				Expect(pods.Items).ToNot(BeEmpty(), "expected at least 1 controller pod running")
-				controllerPodName = pods.Items[0].Name
-				Expect(controllerPodName).To(ContainSubstring("controller"))
-				g.Expect(pods.Items[0].Status.Phase).To(Equal(corev1.PodRunning), "Incorrect controller pod status")
+			By("validating that the controller deployment is ready")
+			deploymentKey := types.NamespacedName{
+				Name:      "kubevirt-migration-controller",
+				Namespace: *migrationControllerNamespace,
 			}
-			Eventually(verifyControllerUp).Should(Succeed())
+			deployment := &appsv1.Deployment{}
+			Eventually(func() []appsv1.DeploymentCondition {
+				Expect(c.Get(context.TODO(), deploymentKey, deployment)).To(Succeed())
+				return deployment.Status.Conditions
+			}).Should(ContainElement(SatisfyAll(
+				HaveField("Type", appsv1.DeploymentAvailable),
+				HaveField("Status", corev1.ConditionTrue),
+			)))
+
+			By("retrieving the controller pod name")
+			pods := &corev1.PodList{}
+			err := c.List(context.TODO(), pods,
+				client.InNamespace(*migrationControllerNamespace),
+				client.MatchingLabels(deployment.Spec.Selector.MatchLabels),
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pods.Items).ToNot(BeEmpty())
+			controllerPodName = pods.Items[0].Name
 		})
 
 		It("should ensure the metrics endpoint is serving metrics", func() {
