@@ -5,6 +5,7 @@ metadata:
     control-plane: controller
     app.kubernetes.io/name: kubevirt-migration-controller
     app.kubernetes.io/managed-by: kustomize
+    prometheus.migrations.kubevirt.io: "true"
   name: controller-metrics-service
   namespace: system
 spec:

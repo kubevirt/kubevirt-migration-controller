@@ -40,11 +40,11 @@ import (
 // serviceAccountName created for the project
 const serviceAccountName = "kubevirt-migration-controller"
 
-// metricsServiceName is the name of the metrics service of the project
-const metricsServiceName = "kubevirt-migration-controller-metrics-service"
-
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
 const metricsRoleBindingName = "kubevirt-migration-metrics-binding"
+
+// metricsServiceLabel is the label used to discover the metrics service
+const metricsServiceLabel = "prometheus.migrations.kubevirt.io"
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
@@ -142,12 +142,22 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		It("should ensure the metrics endpoint is serving metrics", func() {
+			By("discovering the metrics service by label")
+			services := &corev1.ServiceList{}
+			err := c.List(context.TODO(), services,
+				client.InNamespace(*migrationControllerNamespace),
+				client.MatchingLabels{metricsServiceLabel: "true"},
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(services.Items).To(HaveLen(1), "expected exactly one metrics service")
+			metricsServiceName := services.Items[0].Name
+
 			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
 			cmd := exec.Command(*kubectlPath, "create", "clusterrolebinding", metricsRoleBindingName,
 				"--clusterrole=kubevirt-migration-metrics-reader",
 				fmt.Sprintf("--serviceaccount=%s:%s", *migrationControllerNamespace, serviceAccountName),
 			)
-			_, err := utils.Run(cmd)
+			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create ClusterRoleBinding")
 			DeferCleanup(func() {
 				By("deleting ClusterRoleBinding for the service account to allow access to metrics")
@@ -155,11 +165,6 @@ var _ = Describe("Manager", Ordered, func() {
 				_, err := utils.Run(cmd)
 				Expect(err).NotTo(HaveOccurred(), "Failed to delete ClusterRoleBinding")
 			})
-
-			By("validating that the metrics service is available")
-			cmd = exec.Command(*kubectlPath, "get", "service", metricsServiceName, "-n", *migrationControllerNamespace)
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Metrics service should exist")
 
 			By("getting the service account token")
 			token, err := serviceAccountToken()
