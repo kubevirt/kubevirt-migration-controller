@@ -138,20 +138,17 @@ func (r *StorageMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	requeueAfter := NoReQ
+	var migrateErr error
 
 	// Migrate
 	if !migration.Status.HasBlockerCondition() || migration.DeletionTimestamp != nil {
 		log.V(3).Info("Starting VirtualMachineStorageMigration", "deletionTimestamp", migration.DeletionTimestamp)
-		var err error
-		requeueAfter, err = r.migrate(ctx, plan, migration)
-		if err != nil {
-			return reconcile.Result{}, err
-		}
+		requeueAfter, migrateErr = r.migrate(ctx, plan, migration)
 	}
 
-	// Make a copy of the migration object so we can keep the finalizers
+	// Persist status/metadata even when migrate fails so phase transitions such as
+	// Canceling are not lost across retries.
 	migrationCopy := migration.DeepCopy()
-	// Apply changes to the status.
 	if !apiequality.Semantic.DeepEqual(migration.Status, origMigration.Status) {
 		log.V(5).Info("Updating VirtualMachineStorageMigration status", "phase", migration.Status.Phase)
 		if err := r.Status().Update(context.TODO(), migration); err != nil {
@@ -159,7 +156,6 @@ func (r *StorageMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 	}
 
-	// Apply changes to the migration.
 	if !apiequality.Semantic.DeepEqual(migration.ObjectMeta, origMigration.ObjectMeta) {
 		migration.Finalizers = migrationCopy.Finalizers
 		log.V(5).Info("Updating VirtualMachineStorageMigration object metadata", "finalizers", migration.Finalizers)
@@ -169,6 +165,9 @@ func (r *StorageMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	log.V(5).Info("Reconciling VirtualMachineStorageMigration completed")
+	if migrateErr != nil {
+		return reconcile.Result{}, migrateErr
+	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
