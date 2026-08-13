@@ -28,6 +28,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
+	virtv1 "kubevirt.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
@@ -158,6 +160,59 @@ var _ = Describe("StorageMigPlan Controller envtests - with minimal real apiserv
 			By("Verifying the plan is hard-deleted")
 			err = k8sClient.Get(ctx, typeNamespacedName, updated)
 			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		})
+	})
+
+	Context("self-heal completedOutOf after deleteSource regression", func() {
+		It("should heal CompletedMigrations when plan is in regressed 0/1 state", func() {
+			By("Simulating the regressed state: completedOutOf=0/1 with empty CompletedMigrations")
+			updated := &migrations.VirtualMachineStorageMigrationPlan{}
+			Expect(reconciler.Client.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+			Expect(updated.Status.CompletedMigrations).To(BeEmpty())
+			updated.Status.CompletedOutOf = "0/1"
+			Expect(reconciler.Client.Status().Update(ctx, updated)).To(Succeed())
+
+			By("Creating KubeVirt")
+			kv := &virtv1.KubeVirt{
+				ObjectMeta: metav1.ObjectMeta{Name: "kv", Namespace: kvNamespace},
+				Spec: virtv1.KubeVirtSpec{
+					Configuration: virtv1.KubeVirtConfiguration{
+						DeveloperConfiguration: &virtv1.DeveloperConfiguration{},
+						VMRolloutStrategy:      ptr.To(virtv1.VMRolloutStrategyLiveUpdate),
+					},
+				},
+				Status: virtv1.KubeVirtStatus{OperatorVersion: "v1.5.0"},
+			}
+			Expect(createKubeVirt(ctx, reconciler.Client, kv)).ToNot(BeNil())
+
+			By("Creating VM (no source PVC — already deleted by deleteSource)")
+			vm := testutils.NewVirtualMachine(testutils.TestVMName, testutils.TestNamespace, testutils.TestVolumeName, testutils.TestSourcePVCName)
+			Expect(reconciler.Client.Create(ctx, vm)).To(Succeed())
+
+			By("Creating completed child migration")
+			migration := &migrations.VirtualMachineStorageMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testutils.TestMigPlanName + "-mig",
+					Namespace: testutils.TestNamespace,
+				},
+				Spec: migrations.VirtualMachineStorageMigrationSpec{
+					VirtualMachineStorageMigrationPlanRef: &corev1.ObjectReference{
+						Name:      testutils.TestMigPlanName,
+						Namespace: testutils.TestNamespace,
+					},
+				},
+			}
+			Expect(reconciler.Client.Create(ctx, migration)).To(Succeed())
+			migration.Status.Phase = migrations.Completed
+			migration.Status.CompletedMigrations = []string{testutils.TestVMName}
+			Expect(reconciler.Client.Status().Update(ctx, migration)).To(Succeed())
+
+			By("reconcile heals CompletedMigrations")
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reconciler.Client.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+			Expect(updated.Status.CompletedMigrations).To(HaveLen(1))
+			Expect(updated.Status.CompletedMigrations[0].Name).To(Equal(testutils.TestVMName))
 		})
 	})
 
