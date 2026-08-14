@@ -843,4 +843,180 @@ var _ = Describe("StorageMigration tasks", func() {
 			Expect(task.Requeue).To(Equal(PollReQ), "should set requeue to retry later")
 		})
 	})
+
+	DescribeTable("deletion while plan is being deleted",
+		func(planDeleting, planHasFinalizer bool, expectedPhase migrations.Phase) {
+			now := metav1.Now()
+			plan := &migrations.VirtualMachineStorageMigrationPlan{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testutils.TestMigPlanName,
+					Namespace:  testutils.TestNamespace,
+					Finalizers: []string{},
+				},
+			}
+			if planDeleting {
+				plan.DeletionTimestamp = &now
+			}
+			if planHasFinalizer {
+				plan.Finalizers = []string{migrations.VirtualMachineStorageMigrationPlanFinalizer}
+			}
+			migration := &migrations.VirtualMachineStorageMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              testutils.TestMigMigrationName,
+					Namespace:         testutils.TestNamespace,
+					DeletionTimestamp: &now,
+				},
+				Status: migrations.VirtualMachineStorageMigrationStatus{
+					Phase: migrations.Started,
+				},
+			}
+			task := &Task{
+				Owner:  migration,
+				Plan:   plan,
+				Log:    logf.Log.WithName("test"),
+				Client: controllerReconciler.Client,
+			}
+			Expect(task.Run(ctx)).To(Succeed())
+			Expect(migration.Status.Phase).To(Equal(expectedPhase))
+		},
+		Entry("plan deletion blocked by finalizer - continue migration", true, true, migrations.RefreshStorageMigrationPlan),
+		Entry("plan not deleting - cancel migration", false, false, migrations.CleanupCancelledMigrations),
+		Entry("plan deleting without finalizer - cancel migration", true, false, migrations.CleanupCancelledMigrations),
+	)
+
+	It("revertPlanVolumes swaps current target names back to sources for DVT matching", func() {
+		planVM := &migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+			VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+				Name: "test-vm",
+				TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+					{
+						VolumeName: "disk0",
+						DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+							Name: ptr.To("target-pvc"),
+						},
+					},
+				},
+			},
+			SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+				{
+					VolumeName: "disk0",
+					Name:       "source-pvc",
+					SourcePVC: corev1.PersistentVolumeClaim{
+						ObjectMeta: metav1.ObjectMeta{Name: "source-pvc"},
+					},
+				},
+			},
+		}
+		task := &Task{Log: logf.Log.WithName("test")}
+		reverted, err := task.revertPlanVolumes(planVM)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reverted.SourcePVCs[0].Name).To(Equal("target-pvc"), "SourcePVCs.Name must be current mid-flight name for DVT matching")
+		Expect(reverted.SourcePVCs[0].SourcePVC.Name).To(Equal("target-pvc"))
+		Expect(reverted.TargetMigrationPVCs[0].DestinationPVC.Name).NotTo(BeNil())
+		Expect(*reverted.TargetMigrationPVCs[0].DestinationPVC.Name).To(Equal("source-pvc"))
+		Expect(planVM.SourcePVCs[0].Name).To(Equal("source-pvc"), "original planVM must remain unchanged")
+		Expect(*planVM.TargetMigrationPVCs[0].DestinationPVC.Name).To(Equal("target-pvc"))
+	})
+
+	It("revertPlanVolumes returns an error when source and target PVC lists differ in length", func() {
+		planVM := &migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+			VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+				Name: "test-vm",
+				TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+					{VolumeName: "disk0", DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{Name: ptr.To("target-pvc")}},
+				},
+			},
+			SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+				{VolumeName: "disk0", Name: "source-pvc"},
+				{VolumeName: "disk1", Name: "source-pvc-2"},
+			},
+		}
+		task := &Task{Log: logf.Log.WithName("test")}
+		_, err := task.revertPlanVolumes(planVM)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("length mismatch"))
+	})
+
+	DescribeTable("isVMOnSourceVolumes",
+		func(sourceName string, volumeClaim string, expectOnSource bool) {
+			ctx := context.Background()
+			vmName := "onsource-" + volumeClaim + "-" + sourceName
+			if len(vmName) > 63 {
+				vmName = vmName[:63]
+			}
+			vm := testutils.NewVirtualMachine(vmName, testutils.TestNamespace, "disk0", volumeClaim)
+			Expect(k8sClient.Create(ctx, vm)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, vm)
+			})
+
+			task := &Task{
+				Client: k8sClient,
+				Log:    logf.Log.WithName("test"),
+				Owner: &migrations.VirtualMachineStorageMigration{
+					ObjectMeta: metav1.ObjectMeta{Namespace: testutils.TestNamespace},
+				},
+				Plan: &migrations.VirtualMachineStorageMigrationPlan{
+					Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+						InProgressMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+								Name: vmName,
+								TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{{
+									VolumeName: "disk0",
+									DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+										Name: ptr.To("target-pvc"),
+									},
+								}},
+							},
+							SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{{
+								VolumeName: "disk0",
+								Name:       sourceName,
+							}},
+						}},
+					},
+				},
+			}
+			onSource, err := task.isVMOnSourceVolumes(ctx, vmName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(onSource).To(Equal(expectOnSource))
+		},
+		Entry("true when volumes match real sources", "source-pvc", "source-pvc", true),
+		Entry("false when volumes still on target", "source-pvc", "target-pvc", false),
+		Entry("false when SourcePVCs corrupted to target but volumes on target", "target-pvc", "target-pvc", false),
+	)
+
+	It("recoverCorruptedSourcePVCs restores originals from VolumeUpdateState", func() {
+		task := &Task{Log: logf.Log.WithName("test")}
+		planVM := &migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+			VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+				Name: "test-vm",
+				TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{{
+					VolumeName: "disk0",
+					DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+						Name: ptr.To("target-pvc"),
+					},
+				}},
+			},
+			SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{{
+				VolumeName: "disk0",
+				Name:       "target-pvc",
+				SourcePVC:  corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "target-pvc"}},
+			}},
+		}
+		vm := &virtv1.VirtualMachine{
+			Status: virtv1.VirtualMachineStatus{
+				VolumeUpdateState: &virtv1.VolumeUpdateState{
+					VolumeMigrationState: &virtv1.VolumeMigrationState{
+						MigratedVolumes: []virtv1.StorageMigratedVolumeInfo{{
+							SourcePVCInfo:      &virtv1.PersistentVolumeClaimInfo{ClaimName: "source-pvc"},
+							DestinationPVCInfo: &virtv1.PersistentVolumeClaimInfo{ClaimName: "target-pvc"},
+						}},
+					},
+				},
+			},
+		}
+		Expect(task.recoverCorruptedSourcePVCs(vm, planVM)).To(Succeed())
+		Expect(planVM.SourcePVCs[0].Name).To(Equal("source-pvc"))
+		Expect(planVM.SourcePVCs[0].SourcePVC.Name).To(Equal("source-pvc"))
+	})
 })

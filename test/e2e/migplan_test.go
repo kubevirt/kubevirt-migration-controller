@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"time"
 
+	expect "github.com/google/goexpect"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -27,10 +28,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/utils/ptr"
 	virtv1 "kubevirt.io/api/core/v1"
+	migrationsv1 "kubevirt.io/api/migrations/v1alpha1"
 	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
 	"kubevirt.io/kubevirt-migration-controller/test/utils/console"
@@ -511,6 +514,154 @@ var _ = Describe("MigPlan", func() {
 			waitMigrationCompleted([]string{vm1.Name, vm2.Name}, namespace.Name)
 			verifyOfflineVM(vm1, target1)
 			verifyOfflineVM(vm2, target2)
+		})
+
+		It("should cancel when the migration is deleted mid-flight and keep the VM on the source PVC", func() {
+			const (
+				targetPVC      = "target-pvc-cancel"
+				policyLabelKey = "e2e-storage-mig-cancel"
+				policyLabelVal = "slow"
+			)
+			completionTimeoutPerGiB := int64(800)
+			var migrationPolicyName string
+			DeferCleanup(func() {
+				if migrationPolicyName == "" {
+					return
+				}
+				By("Deleting MigrationPolicy")
+				policy := &migrationsv1.MigrationPolicy{
+					ObjectMeta: metav1.ObjectMeta{Name: migrationPolicyName},
+				}
+				err := c.Delete(context.TODO(), policy, &client.DeleteOptions{})
+				if !k8serrors.IsNotFound(err) {
+					Expect(err).NotTo(HaveOccurred())
+				}
+			})
+
+			By("Creating a Fedora DataVolume (stress-ng available for dirtying memory)")
+			dv := libdv.NewDataVolume(
+				libdv.WithNamespace(namespace.Name),
+				libdv.WithRegistryURLSourceAndCustomCA(
+					cd.DataVolumeImportUrlForContainerDisk(cd.ContainerDiskFedoraTestTooling), registryProxyCACertName),
+				libdv.WithStorage(
+					libdv.StorageWithStorageClass(storageClassName),
+					libdv.StorageWithVolumeSize(cd.FedoraVolumeSize),
+					libdv.StorageWithFilesystemVolumeMode(),
+				),
+			)
+			sourceDVName := dv.Name
+
+			By("Creating a running Fedora VM labeled for a bandwidth-limited MigrationPolicy")
+			vmi := libvmi.New(
+				libvmi.WithNamespace(namespace.Name),
+				libvmi.WithInterface(libvmi.InterfaceDeviceWithMasqueradeBinding()),
+				libvmi.WithNetwork(virtv1.DefaultPodNetwork()),
+				libvmi.WithMemoryRequest("1Gi"),
+				libvmi.WithDataVolume(volumeName, dv.Name),
+				libvmi.WithLabel(policyLabelKey, policyLabelVal),
+			)
+			vm := libvmi.NewVirtualMachine(vmi,
+				libvmi.WithRunStrategy(virtv1.RunStrategyAlways),
+				libvmi.WithDataVolumeTemplate(dv),
+			)
+			vm.Namespace = namespace.Name
+			Expect(c.Create(context.Background(), vm, &client.CreateOptions{})).To(Succeed())
+
+			By("Creating a MigrationPolicy that throttles live migration bandwidth")
+			migrationPolicyName = fmt.Sprintf("e2e-cancel-%s", rand.String(5))
+			policy := &migrationsv1.MigrationPolicy{
+				ObjectMeta: metav1.ObjectMeta{Name: migrationPolicyName},
+				Spec: migrationsv1.MigrationPolicySpec{
+					BandwidthPerMigration:   ptr.To(resource.MustParse("1Ki")),
+					CompletionTimeoutPerGiB: &completionTimeoutPerGiB,
+					Selectors: &migrationsv1.Selectors{
+						VirtualMachineInstanceSelector: migrationsv1.LabelSelector{
+							policyLabelKey: policyLabelVal,
+						},
+					},
+				},
+			}
+			Expect(c.Create(context.TODO(), policy, &client.CreateOptions{})).To(Succeed())
+
+			By("Waiting for the VM/VMI to be ready")
+			Eventually(matcher.ThisVM(vm, c), 360*time.Second, 1*time.Second).Should(matcher.BeReady())
+			runningVMI := &virtv1.VirtualMachineInstance{
+				ObjectMeta: metav1.ObjectMeta{Name: vm.Name, Namespace: vm.Namespace},
+			}
+			Expect(c.Get(context.TODO(), client.ObjectKeyFromObject(runningVMI), runningVMI, &client.GetOptions{})).To(Succeed())
+			libwait.WaitForSuccessfulVMIStart(runningVMI, c)
+
+			By("Logging in and starting stress-ng to keep memory dirty during migration")
+			Expect(console.LoginToFedora(runningVMI)).To(Succeed())
+			Expect(console.ExpectBatch(runningVMI, []expect.Batcher{
+				&expect.BSnd{S: "\n"},
+				&expect.BExp{R: console.PromptExpression},
+				&expect.BSnd{S: "command -v stress-ng\n"},
+				&expect.BExp{R: console.PromptExpression},
+				&expect.BSnd{S: "stress-ng --vm 1 --vm-bytes 250M --vm-keep &\n"},
+				&expect.BExp{R: console.PromptExpression},
+			}, 60*time.Second)).To(Succeed())
+
+			createPlanAndMigration([]string{vm.Name}, []string{targetPVC}, namespace.Name, 1)
+
+			By("Waiting for migration to be mid-flight with a live VirtualMachineInstanceMigration")
+			Eventually(func(g Gomega) {
+				m := &migrations.VirtualMachineStorageMigration{
+					ObjectMeta: metav1.ObjectMeta{Name: migrationName, Namespace: namespace.Name},
+				}
+				g.Expect(c.Get(context.TODO(), client.ObjectKeyFromObject(m), m, &client.GetOptions{})).To(Succeed())
+				g.Expect(m.Status.Phase).To(Equal(migrations.WaitForLiveMigrationToComplete), "phase=%s", m.Status.Phase)
+				g.Expect(m.Status.RunningMigrations).NotTo(BeEmpty())
+				g.Expect(m.Finalizers).To(ContainElement(migrations.VirtualMachineStorageMigrationFinalizer),
+					"migration must have a finalizer so delete goes through cancel")
+
+				vmimList := &virtv1.VirtualMachineInstanceMigrationList{}
+				g.Expect(c.List(context.TODO(), vmimList, client.InNamespace(namespace.Name))).To(Succeed())
+				g.Expect(vmimList.Items).NotTo(BeEmpty(), "expected an in-progress VirtualMachineInstanceMigration")
+			}, 10*time.Minute, 2*time.Second).Should(Succeed())
+
+			By("Deleting the migration while in progress")
+			migration := &migrations.VirtualMachineStorageMigration{
+				ObjectMeta: metav1.ObjectMeta{Name: migrationName, Namespace: namespace.Name},
+			}
+			Expect(c.Delete(context.TODO(), migration, &client.DeleteOptions{})).To(Succeed())
+
+			By("Waiting for migration cancel to finish and the object to be garbage-collected")
+			Eventually(func(g Gomega) {
+				m := &migrations.VirtualMachineStorageMigration{
+					ObjectMeta: metav1.ObjectMeta{Name: migrationName, Namespace: namespace.Name},
+				}
+				err := c.Get(context.TODO(), client.ObjectKeyFromObject(m), m, &client.GetOptions{})
+				if k8serrors.IsNotFound(err) {
+					return
+				}
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(m.DeletionTimestamp).NotTo(BeNil(), "expected DeletionTimestamp after delete")
+				g.Expect(m.Status.Phase).NotTo(Equal(migrations.Completed),
+					"migration completed instead of canceling; phase=%s cancelled=%v running=%v",
+					m.Status.Phase, m.Status.CancelledMigrations, m.Status.RunningMigrations)
+				g.Expect(m.Status.Phase).To(Or(
+					Equal(migrations.Canceling),
+					Equal(migrations.CleanupCancelledMigrations),
+					Equal(migrations.Canceled),
+				), "expected cancel pipeline while finalizer is held; phase=%s cancelled=%v running=%v",
+					m.Status.Phase, m.Status.CancelledMigrations, m.Status.RunningMigrations)
+				// Object still exists (Get succeeded above). Fail so Eventually retries
+				// until NotFound hits the early return.
+				g.Expect("object still exists").To(BeEmpty(),
+					"waiting for GC after cancel; phase=%s cancelled=%v running=%v",
+					m.Status.Phase, m.Status.CancelledMigrations, m.Status.RunningMigrations)
+			}, 15*time.Minute, 2*time.Second).Should(Succeed())
+
+			By("Verifying the VM still references the source DataVolume and remains accessible")
+			updatedVM := &virtv1.VirtualMachine{
+				ObjectMeta: metav1.ObjectMeta{Name: vm.Name, Namespace: vm.Namespace},
+			}
+			Expect(c.Get(context.TODO(), client.ObjectKeyFromObject(updatedVM), updatedVM, &client.GetOptions{})).To(Succeed())
+			Expect(updatedVM.Spec.DataVolumeTemplates[0].Name).To(Equal(sourceDVName))
+			Expect(updatedVM.Spec.Template.Spec.Volumes[0].DataVolume.Name).To(Equal(sourceDVName))
+			Expect(c.Get(context.TODO(), client.ObjectKeyFromObject(runningVMI), runningVMI, &client.GetOptions{})).To(Succeed())
+			Expect(console.LoginToFedora(runningVMI)).To(Succeed())
 		})
 
 		It("should successfully migrate a plan with one running and one offline VM", func() {

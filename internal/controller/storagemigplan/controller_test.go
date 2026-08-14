@@ -22,6 +22,9 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
@@ -46,7 +49,7 @@ var _ = Describe("StorageMigPlan Controller envtests - with minimal real apiserv
 
 	BeforeEach(func() {
 		reconciler = &StorageMigPlanReconciler{
-			Client:        k8sClient,
+			Client:        reconcilerClient,
 			Scheme:        scheme.Scheme,
 			EventRecorder: record.NewFakeRecorder(10),
 		}
@@ -71,10 +74,10 @@ var _ = Describe("StorageMigPlan Controller envtests - with minimal real apiserv
 			updated := &migrations.VirtualMachineStorageMigrationPlan{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
 			Expect(updated.Annotations[RefreshStartTimeAnnotation]).To(BeEmpty())
-			migplan.Annotations = map[string]string{
+			updated.Annotations = map[string]string{
 				RefreshStartTimeAnnotation: time.Now().Add(-time.Minute).Format(time.RFC3339Nano),
 			}
-			Expect(k8sClient.Update(ctx, migplan)).To(Succeed())
+			Expect(k8sClient.Update(ctx, updated)).To(Succeed())
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
@@ -92,6 +95,69 @@ var _ = Describe("StorageMigPlan Controller envtests - with minimal real apiserv
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should block deletion while active migrations exist, and allow deletion once migrations complete", func() {
+			By("Reconciling to add finalizer and sync plan status")
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &migrations.VirtualMachineStorageMigrationPlan{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+			Expect(updated.Finalizers).To(ContainElement(migrations.VirtualMachineStorageMigrationPlanFinalizer))
+
+			By("Creating a migration pointing to the plan")
+			migration := &migrations.VirtualMachineStorageMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-active-migration",
+					Namespace: testutils.TestNamespace,
+				},
+				Spec: migrations.VirtualMachineStorageMigrationSpec{
+					VirtualMachineStorageMigrationPlanRef: &corev1.ObjectReference{
+						Name: testutils.TestMigPlanName,
+						UID:  migplan.UID,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, migration)).To(Succeed())
+
+			By("Setting migration phase to Started via status subresource")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "test-active-migration", Namespace: testutils.TestNamespace}, migration)).To(Succeed())
+			migration.Status.Phase = migrations.Started
+			Expect(k8sClient.Status().Update(ctx, migration)).To(Succeed())
+
+			By("Deleting the plan (sets DeletionTimestamp, finalizer prevents hard delete)")
+			Expect(k8sClient.Get(ctx, typeNamespacedName, migplan)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, migplan)).To(Succeed())
+
+			By("Reconciling - deletion should be blocked by active migration")
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the plan still exists with DeletionTimestamp and DeletionBlocked condition")
+			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+			Expect(updated.DeletionTimestamp).ToNot(BeNil())
+			Expect(updated.Finalizers).To(ContainElement(migrations.VirtualMachineStorageMigrationPlanFinalizer))
+			Expect(updated.Status.HasCondition(migrations.DeletionBlocked)).To(BeTrue())
+
+			By("Completing the migration")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "test-active-migration", Namespace: testutils.TestNamespace}, migration)).To(Succeed())
+			migration.Status.Phase = migrations.Completed
+			Expect(k8sClient.Status().Update(ctx, migration)).To(Succeed())
+
+			By("Reconciling - deletion should proceed now")
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying the plan is hard-deleted")
+			err = k8sClient.Get(ctx, typeNamespacedName, updated)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		})
 	})
 
