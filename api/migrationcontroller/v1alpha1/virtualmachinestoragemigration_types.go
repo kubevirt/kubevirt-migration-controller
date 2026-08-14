@@ -17,7 +17,6 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -146,21 +145,18 @@ func HasFinalizer(object metav1.Object, value string) bool {
 }
 
 // SetFinalizer adds the passed in finalizer to the migration
-func (r *VirtualMachineStorageMigration) AddFinalizer(finalizer string, log logr.Logger) {
+func (r *VirtualMachineStorageMigration) AddFinalizer(finalizer string) {
 	if HasFinalizer(r, finalizer) {
-		log.V(5).Info("Finalizer already exists", "finalizer", finalizer)
 		return
 	}
 	r.Finalizers = append(r.Finalizers, finalizer)
-	log.V(5).Info("Added finalizer", "finalizer", finalizer)
 }
 
 // RemoveFinalizer removes the passed in finalizer from the migration
-func (r *VirtualMachineStorageMigration) RemoveFinalizer(finalizer string, log logr.Logger) {
+func (r *VirtualMachineStorageMigration) RemoveFinalizer(finalizer string) {
 	for i, f := range r.Finalizers {
 		if f == finalizer {
 			r.Finalizers = append(r.Finalizers[:i], r.Finalizers[i+1:]...)
-			log.V(5).Info("Removed finalizer", "finalizer", finalizer)
 			break
 		}
 	}

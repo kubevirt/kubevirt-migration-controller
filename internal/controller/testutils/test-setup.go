@@ -101,11 +101,18 @@ func cleanupMultiNamespaceVirtualMachineStorageMigrationPlan(ctx context.Context
 	}
 }
 
-func cleanupVirtualMachineStorageMigrationPlan(ctx context.Context, client client.Client) {
+func cleanupVirtualMachineStorageMigrationPlan(ctx context.Context, cl client.Client) {
 	vmStorageMigrationPlanList := &migrations.VirtualMachineStorageMigrationPlanList{}
-	Expect(client.List(ctx, vmStorageMigrationPlanList)).To(Succeed())
-	for _, migPlan := range vmStorageMigrationPlanList.Items {
-		Expect(client.Delete(ctx, &migPlan)).To(Succeed())
+	Expect(cl.List(ctx, vmStorageMigrationPlanList)).To(Succeed())
+	for i := range vmStorageMigrationPlanList.Items {
+		migPlan := &vmStorageMigrationPlanList.Items[i]
+		// AfterEach cleanup uses a raw client — no reconciler runs — so clear
+		// finalizers here (same as cleanupVirtualMachineStorageMigration below).
+		// Otherwise Delete only sets DeletionTimestamp and the plan leaks into
+		// the next test.
+		migPlan.Finalizers = nil
+		Expect(cl.Update(ctx, migPlan)).To(Succeed())
+		Expect(cl.Delete(ctx, migPlan)).To(Succeed())
 	}
 }
 
