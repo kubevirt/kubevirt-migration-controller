@@ -28,6 +28,7 @@ import (
 	routev1 "github.com/openshift/api/route/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
+	ctrlcache "sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -43,10 +44,12 @@ import (
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
 
 var (
-	ctx       context.Context
-	cancel    context.CancelFunc
-	testEnv   *envtest.Environment
-	k8sClient client.Client
+	ctx              context.Context
+	cancel           context.CancelFunc
+	testEnv          *envtest.Environment
+	cacheReader      ctrlcache.Cache
+	k8sClient        client.Client
+	reconcilerClient client.Client
 )
 
 const (
@@ -85,9 +88,21 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(cfg).NotTo(BeNil())
 
+	cacheReader, err = ctrlcache.New(cfg, ctrlcache.Options{Scheme: scheme.Scheme})
+	Expect(err).NotTo(HaveOccurred())
+	Expect(IndexFields(cacheReader)).To(Succeed())
+
+	go func() {
+		defer GinkgoRecover()
+		Expect(cacheReader.Start(ctx)).To(Succeed())
+	}()
+	Expect(cacheReader.WaitForCacheSync(ctx)).To(BeTrue())
+
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(k8sClient).NotTo(BeNil())
+
+	reconcilerClient = newFieldIndexClient(k8sClient, cacheReader)
 
 	testutils.CreateKubeVirtNamespace(ctx, k8sClient, kvNamespace)
 	testutils.CreateMigPlanNamespace(ctx, k8sClient, testutils.TestNamespace)
@@ -125,4 +140,24 @@ func getFirstFoundEnvTestBinaryDir() string {
 		}
 	}
 	return ""
+}
+
+// fieldIndexClient delegates field-indexed List calls to a cache (like the manager
+// does in production) while routing all other operations to the API client.
+type fieldIndexClient struct {
+	client.Client
+	cache client.Reader
+}
+
+func newFieldIndexClient(api client.Client, cache client.Reader) client.Client {
+	return &fieldIndexClient{Client: api, cache: cache}
+}
+
+func (c *fieldIndexClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	listOpts := client.ListOptions{}
+	listOpts.ApplyOptions(opts)
+	if listOpts.FieldSelector != nil && !listOpts.FieldSelector.Empty() {
+		return c.cache.List(ctx, list, opts...)
+	}
+	return c.Client.List(ctx, list, opts...)
 }
