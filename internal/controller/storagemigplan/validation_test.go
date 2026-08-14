@@ -58,7 +58,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 
 		BeforeEach(func() {
 			reconciler = &StorageMigPlanReconciler{
-				Client:        k8sClient,
+				Client:        reconcilerClient,
 				Scheme:        scheme.Scheme,
 				EventRecorder: record.NewFakeRecorder(10),
 				Log:           logf.Log,
@@ -89,9 +89,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName, testutils.NewVirtualMachine(testVMName, testutils.TestNamespace, testVolumeName, originalPVCName))
 				Expect(reconciler.Client.Create(ctx, migPlan)).To(Succeed())
 
-				_, err := reconciler.Reconcile(ctx, reconcile.Request{
-					NamespacedName: typeNamespacedName,
-				})
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 
 				updated := &migrations.VirtualMachineStorageMigrationPlan{}
@@ -312,9 +310,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				updated.Status.Suffix = ptr.To("abcd")
 				Expect(reconciler.Client.Status().Update(ctx, updated)).To(Succeed())
 
-				_, err := reconciler.Reconcile(ctx, reconcile.Request{
-					NamespacedName: typeNamespacedName,
-				})
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 				updated = &migrations.VirtualMachineStorageMigrationPlan{}
 				Expect(reconciler.Client.Get(ctx, typeNamespacedName, updated)).NotTo(HaveOccurred())
@@ -353,9 +349,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				}
 				Expect(reconciler.Client.Create(ctx, migPlan)).To(Succeed())
 
-				_, err := reconciler.Reconcile(ctx, reconcile.Request{
-					NamespacedName: typeNamespacedName,
-				})
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 				updated := &migrations.VirtualMachineStorageMigrationPlan{}
 				Expect(reconciler.Client.Get(ctx, typeNamespacedName, updated)).NotTo(HaveOccurred())
@@ -481,9 +475,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName, vms...)
 				Expect(reconciler.Client.Create(ctx, migPlan)).To(Succeed())
 
-				_, err := reconciler.Reconcile(ctx, reconcile.Request{
-					NamespacedName: typeNamespacedName,
-				})
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 				updated := &migrations.VirtualMachineStorageMigrationPlan{}
 				readyMessage := "plan is ready"
@@ -586,9 +578,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				Expect(reconciler.Client.Create(ctx, virtDefaultStorageClass)).To(Succeed())
 				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName, vm)
 				Expect(reconciler.Client.Create(ctx, migPlan)).To(Succeed())
-				_, err := reconciler.Reconcile(ctx, reconcile.Request{
-					NamespacedName: typeNamespacedName,
-				})
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 				Expect(err).NotTo(HaveOccurred())
 				updated := &migrations.VirtualMachineStorageMigrationPlan{}
 				Expect(reconciler.Client.Get(ctx, typeNamespacedName, updated)).To(Succeed())
@@ -780,9 +770,7 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				Expect(reconciler.Client.Create(ctx, plan)).To(Succeed())
 
 				By("First reconcile - plan should identify original PVCs as sources")
-				_, err := reconciler.Reconcile(ctx, reconcile.Request{
-					NamespacedName: types.NamespacedName{Name: "test-plan", Namespace: testutils.TestNamespace},
-				})
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: "test-plan", Namespace: testutils.TestNamespace}})
 				Expect(err).NotTo(HaveOccurred())
 
 				By("Verifying initial source PVCs are correct")
@@ -942,6 +930,34 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 					Entry("no swap - both nil",
 						nil,
 						nil,
+						false,
+					),
+				)
+
+				DescribeTable("sourcesMatchTargets",
+					func(statusVM migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, expected bool) {
+						Expect(sourcesMatchTargets(statusVM)).To(Equal(expected))
+					},
+					Entry("true when every source equals its destination",
+						migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+								TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{{
+									DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{Name: ptr.To("target-pvc")},
+								}},
+							},
+							SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{{Name: "target-pvc"}},
+						},
+						true,
+					),
+					Entry("false when sources differ from destinations",
+						migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+								TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{{
+									DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{Name: ptr.To("target-pvc")},
+								}},
+							},
+							SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{{Name: "source-pvc"}},
+						},
 						false,
 					),
 				)

@@ -69,15 +69,27 @@ func (t *Task) Run(ctx context.Context) error {
 	log := t.Log
 
 	if t.Owner.DeletionTimestamp != nil && t.Owner.Status.Phase != migrations.Canceled && t.Owner.Status.Phase != migrations.Completed && t.Owner.Status.Phase != migrations.CleanupCancelledMigrations {
-		t.Log.V(4).Info("Cancelling migration", "migration", t.Owner.Name, "phase", t.Owner.Status.Phase)
-		t.Owner.Status.Phase = migrations.Canceling
+		// Migrations always get a controller owner reference to their plan
+		// (see StorageMigrationReconciler.setOwnerReference). Deleting the plan therefore
+		// cascade-marks owned migrations for deletion. When the plan still has its finalizer,
+		// the plan controller is holding deletion until migrations finish — keep running
+		// instead of canceling. Direct migration deletes (or plan delete after the finalizer
+		// is gone) still cancel as usual.
+		if t.Plan != nil && t.Plan.DeletionTimestamp != nil &&
+			migrations.HasFinalizer(t.Plan, migrations.VirtualMachineStorageMigrationPlanFinalizer) {
+			t.Log.V(4).Info("Migration deletion deferred: plan deletion is blocked until migrations complete",
+				"migration", t.Owner.Name, "phase", t.Owner.Status.Phase)
+		} else {
+			t.Log.V(4).Info("Cancelling migration", "migration", t.Owner.Name, "phase", t.Owner.Status.Phase)
+			t.Owner.Status.Phase = migrations.Canceling
+		}
 	}
 	// Run the current phase.
 	switch t.Owner.Status.Phase {
 	case migrations.Started:
 		log.V(5).Info("Processing Started phase")
 		// Set finalizer on migration
-		t.Owner.AddFinalizer(migrations.VirtualMachineStorageMigrationFinalizer, t.Log)
+		t.Owner.AddFinalizer(migrations.VirtualMachineStorageMigrationFinalizer)
 		t.Owner.Status.Phase = migrations.RefreshStorageMigrationPlan
 	case migrations.RefreshStorageMigrationPlan:
 		log.V(5).Info("Processing RefreshStorageMigrationPlan phase")
@@ -119,7 +131,7 @@ func (t *Task) Run(ctx context.Context) error {
 					return err
 				}
 			}
-			t.Owner.RemoveFinalizer(migrations.VirtualMachineStorageMigrationFinalizer, t.Log)
+			t.Owner.RemoveFinalizer(migrations.VirtualMachineStorageMigrationFinalizer)
 			t.Owner.Status.Phase = migrations.Completed
 		}
 	case migrations.Canceling:
@@ -148,7 +160,7 @@ func (t *Task) Run(ctx context.Context) error {
 			Category: migrations.Advisory,
 			Message:  "The migration has been canceled.",
 		})
-		t.Owner.RemoveFinalizer(migrations.VirtualMachineStorageMigrationFinalizer, t.Log)
+		t.Owner.RemoveFinalizer(migrations.VirtualMachineStorageMigrationFinalizer)
 	default:
 		t.Requeue = NoReQ
 	}
@@ -253,25 +265,36 @@ func (t *Task) handleCancelingPhase(ctx context.Context) error {
 			cancelledMigrations = append(cancelledMigrations, vm.Name)
 			continue
 		}
-		if ok, err := t.isLiveMigrationCompleted(ctx, vm.Name); err != nil {
+
+		onSource, err := t.isVMOnSourceVolumes(ctx, vm.Name)
+		if err != nil {
 			return err
-		} else if !ok {
-			t.Log.V(4).Info("Live migration is not completed attempting to cancel", "vm", vm.Name)
-			if ok, err := t.isLiveMigrationCanceling(ctx, vm.Name); err != nil {
+		}
+		if onSource {
+			// Spec points at source, but an in-flight VMIM (abort or reverse migrate)
+			// may still be using the target — wait until it finishes before cleanup.
+			active, err := t.hasActiveVMIM(ctx, vm.Name)
+			if err != nil {
 				return err
-			} else if !ok {
-				t.Log.V(4).Info("Live migration is not cancelling attempting to cancel", "vm", vm.Name)
-				if err := t.cancelLiveMigration(ctx, vm.Name); err != nil {
-					return err
-				}
+			}
+			if active {
+				t.Log.V(4).Info("Waiting for active VMIM to finish after volume revert", "vm", vm.Name)
 				runningMigrations = append(runningMigrations, vm)
 				continue
-			} else if ok {
-				t.Log.V(4).Info("Live migration is already cancelling", "vm", vm.Name)
-				cancelledMigrations = append(cancelledMigrations, vm.Name)
-				continue
 			}
+			t.Log.V(4).Info("Live migration volumes reverted to source", "vm", vm.Name)
+			cancelledMigrations = append(cancelledMigrations, vm.Name)
+			continue
 		}
+
+		// Still on target volumes — revert even if the VMIM already completed.
+		// Otherwise a race where live migration finishes just as we cancel would
+		// leave the VM on the destination PVC while we GC the migration CR.
+		t.Log.V(4).Info("Reverting live migration volumes to source", "vm", vm.Name)
+		if err := t.cancelLiveMigration(ctx, vm.Name); err != nil {
+			return err
+		}
+		runningMigrations = append(runningMigrations, vm)
 	}
 	t.Owner.Status.RunningMigrations = runningMigrations
 	t.Owner.Status.CancelledMigrations = cancelledMigrations
@@ -280,6 +303,28 @@ func (t *Task) handleCancelingPhase(ctx context.Context) error {
 	}
 	t.Requeue = PollReQ
 	return nil
+}
+
+func (t *Task) hasActiveVMIM(ctx context.Context, vmName string) (bool, error) {
+	vmimList := &virtv1.VirtualMachineInstanceMigrationList{}
+	if err := t.Client.List(ctx, vmimList, k8sclient.InNamespace(t.Owner.Namespace)); err != nil {
+		return false, err
+	}
+	for _, vmim := range vmimList.Items {
+		if vmim.Spec.VMIName != vmName {
+			continue
+		}
+		if vmim.CreationTimestamp.Before(&t.Owner.CreationTimestamp) {
+			continue
+		}
+		switch vmim.Status.Phase {
+		case virtv1.MigrationSucceeded, virtv1.MigrationFailed:
+			continue
+		default:
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (t *Task) isLiveMigrationCompleted(ctx context.Context, vmName string) (bool, error) {
