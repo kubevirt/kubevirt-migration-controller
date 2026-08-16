@@ -79,52 +79,93 @@ func (r *StorageMigPlanReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return reconcile.Result{}, err
 	}
 
-	planCopy := plan.DeepCopy()
-	plan.Status.CompletedOutOf = fmt.Sprintf("%d/%d", len(plan.Status.CompletedMigrations), len(plan.Spec.VirtualMachines))
+	origPlan := plan.DeepCopy()
 
-	if plan.Status.Suffix == nil {
-		// Generate suffix
-		suffix := rand.String(4)
-		plan.Status.Suffix = &suffix
-	}
-
-	// Validations.
-	if err := r.validate(ctx, plan); err != nil {
-		r.Log.Error(err, "Failed to validate VirtualMachineStorageMigrationPlan")
-		plan.Status.SetReconcileFailed(err)
-	} else {
-		plan.Status.DeleteCondition(migrations.ReconcileFailed)
-	}
-
-	if plan.Status.HasCriticalCondition() {
-		plan.Status.SetCondition(readyCondition(corev1.ConditionFalse, "plan has one or more critical conditions"))
-	} else if len(plan.Status.ReadyMigrations) > 0 {
-		plan.Status.SetCondition(readyCondition(corev1.ConditionTrue, "plan is ready"))
-	} else {
-		plan.Status.SetCondition(readyCondition(corev1.ConditionFalse, "no virtual machines are ready for storage migration"))
-	}
-	// Update the ready/completed migrations based on the status of the storage migrations
-	if err := r.processMigrations(ctx, plan); err != nil {
-		return reconcile.Result{}, err
-	}
-
-	planStatusCopy := plan.Status.DeepCopy()
-	if !apiequality.Semantic.DeepEqual(plan.Status, planCopy.Status) {
-		log.V(5).Info("Updating MigPlan status")
-		if err := r.Status().Update(ctx, plan); err != nil {
+	if plan.DeletionTimestamp != nil {
+		active, err := r.hasActiveMigrations(ctx, plan)
+		if err != nil {
 			return reconcile.Result{}, err
 		}
-	}
-	plan.Status = *planStatusCopy
+		if active {
+			log.Info("Plan deletion blocked: active migrations exist")
+			// Emit DeletionBlocked condition/event only once. Without this guard every
+			// reconcile while deletion is held would spam Events and rewrite status.
+			if !plan.Status.HasCondition(migrations.DeletionBlocked) {
+				plan.Status.SetCondition(migrations.Condition{
+					Type:     migrations.DeletionBlocked,
+					Status:   corev1.ConditionTrue,
+					Category: migrations.Advisory,
+					Message:  "plan deletion is blocked by active migrations; in-flight migrations will continue until complete",
+				})
+				r.Event(plan, corev1.EventTypeNormal, "DeletionBlocked", "plan deletion is blocked by active migrations")
+			}
+		} else {
+			plan.RemoveFinalizer(migrations.VirtualMachineStorageMigrationPlanFinalizer)
+		}
+	} else {
+		if !migrations.HasFinalizer(plan, migrations.VirtualMachineStorageMigrationPlanFinalizer) {
+			plan.AddFinalizer(migrations.VirtualMachineStorageMigrationPlanFinalizer)
+		}
 
-	if r.shouldUpdateRefresh(plan) {
-		r.setRefreshAnnotations(plan)
-		if err := r.Update(ctx, plan); err != nil {
+		plan.Status.CompletedOutOf = fmt.Sprintf("%d/%d", len(plan.Status.CompletedMigrations), len(plan.Spec.VirtualMachines))
+
+		if plan.Status.Suffix == nil {
+			// Generate suffix
+			suffix := rand.String(4)
+			plan.Status.Suffix = &suffix
+		}
+
+		// Validations.
+		if err := r.validate(ctx, plan); err != nil {
+			r.Log.Error(err, "Failed to validate VirtualMachineStorageMigrationPlan")
+			plan.Status.SetReconcileFailed(err)
+		} else {
+			plan.Status.DeleteCondition(migrations.ReconcileFailed)
+		}
+
+		if plan.Status.HasCriticalCondition() {
+			plan.Status.SetCondition(readyCondition(corev1.ConditionFalse, "plan has one or more critical conditions"))
+		} else if len(plan.Status.ReadyMigrations) > 0 {
+			plan.Status.SetCondition(readyCondition(corev1.ConditionTrue, "plan is ready"))
+		} else {
+			plan.Status.SetCondition(readyCondition(corev1.ConditionFalse, "no virtual machines are ready for storage migration"))
+		}
+		// Update the ready/completed migrations based on the status of the storage migrations
+		if err := r.processMigrations(ctx, plan); err != nil {
 			return reconcile.Result{}, err
+		}
+
+		if r.shouldUpdateRefresh(plan) {
+			r.setRefreshAnnotations(plan)
 		}
 	}
 
 	log.V(5).Info("Reconciling MigPlan completed")
+	return r.persistPlan(ctx, origPlan, plan)
+}
+
+// persistPlan writes metadata then status once each, only when changed.
+// Metadata is written first so Status().Update sees a fresh resourceVersion.
+// Restore desired status after Update — the main-resource response can replace
+// the in-memory object with an empty status (status is a separate subresource).
+func (r *StorageMigPlanReconciler) persistPlan(ctx context.Context, orig, plan *migrations.VirtualMachineStorageMigrationPlan) (ctrl.Result, error) {
+	desiredStatus := plan.Status.DeepCopy()
+	statusChanged := !apiequality.Semantic.DeepEqual(orig.Status, *desiredStatus)
+	metaChanged := !apiequality.Semantic.DeepEqual(orig.ObjectMeta, plan.ObjectMeta)
+
+	if metaChanged {
+		r.Log.V(5).Info("Updating MigPlan object metadata", "finalizers", plan.Finalizers, "annotations", plan.Annotations)
+		if err := r.Update(ctx, plan); err != nil {
+			return ctrl.Result{}, err
+		}
+		plan.Status = *desiredStatus
+	}
+	if statusChanged {
+		r.Log.V(5).Info("Updating MigPlan status")
+		if err := r.Status().Update(ctx, plan); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	return ctrl.Result{}, nil
 }
 
@@ -256,16 +297,8 @@ func (r *StorageMigPlanReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return err
 	}
 
-	// Index the vmIndexKey field on VirtualMachineStorageMigrationPlans
-	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &migrations.VirtualMachineStorageMigrationPlan{}, vmIndexKey, func(rawObj client.Object) []string {
-		vmStorageMigrationPlan := rawObj.(*migrations.VirtualMachineStorageMigrationPlan)
-		vmNames := []string{}
-		for _, vm := range vmStorageMigrationPlan.Spec.VirtualMachines {
-			vmNames = append(vmNames, vm.Name)
-		}
-		// The indexer stores an entry for each value in the returned slice
-		return vmNames
-	}); err != nil {
+	// Index fields used by List MatchingFields queries.
+	if err := IndexFields(mgr.GetFieldIndexer()); err != nil {
 		return err
 	}
 
@@ -276,23 +309,33 @@ func (r *StorageMigPlanReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return err
 	}
 
-	// Index the migrationNameIndexKey field on VirtualMachineStorageMigrations
-	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &migrations.VirtualMachineStorageMigration{}, migrationNameIndexKey, func(rawObj client.Object) []string {
-		migration := rawObj.(*migrations.VirtualMachineStorageMigration)
-		if migration.Spec.VirtualMachineStorageMigrationPlanRef == nil || migration.Spec.VirtualMachineStorageMigrationPlanRef.Name == "" {
-			return nil
-		}
-		return []string{migration.Spec.VirtualMachineStorageMigrationPlanRef.Name}
-	}); err != nil {
-		return err
-	}
-
 	// Watch for changes to VirtualMachineStorageMigrations
 	if err := c.Watch(source.Kind(mgr.GetCache(), &migrations.VirtualMachineStorageMigration{},
 		handler.TypedEnqueueRequestsFromMapFunc(r.getVirtualMachineStorageMigrationsPlanForStorageMigration))); err != nil {
 		return err
 	}
 	return nil
+}
+
+// IndexFields registers field indexes required by StorageMigPlanReconciler List queries.
+func IndexFields(indexer client.FieldIndexer) error {
+	if err := indexer.IndexField(context.Background(), &migrations.VirtualMachineStorageMigrationPlan{}, vmIndexKey, func(rawObj client.Object) []string {
+		vmStorageMigrationPlan := rawObj.(*migrations.VirtualMachineStorageMigrationPlan)
+		vmNames := make([]string, 0, len(vmStorageMigrationPlan.Spec.VirtualMachines))
+		for _, vm := range vmStorageMigrationPlan.Spec.VirtualMachines {
+			vmNames = append(vmNames, vm.Name)
+		}
+		return vmNames
+	}); err != nil {
+		return err
+	}
+	return indexer.IndexField(context.Background(), &migrations.VirtualMachineStorageMigration{}, migrationNameIndexKey, func(rawObj client.Object) []string {
+		migration := rawObj.(*migrations.VirtualMachineStorageMigration)
+		if migration.Spec.VirtualMachineStorageMigrationPlanRef == nil || migration.Spec.VirtualMachineStorageMigrationPlanRef.Name == "" {
+			return nil
+		}
+		return []string{migration.Spec.VirtualMachineStorageMigrationPlanRef.Name}
+	})
 }
 
 func (r *StorageMigPlanReconciler) getVirtualMachineStorageMigrationsPlanForStorageMigration(ctx context.Context, migration *migrations.VirtualMachineStorageMigration) []reconcile.Request {
@@ -316,4 +359,27 @@ func (r *StorageMigPlanReconciler) getVirtualMachineMigrationPlansForVM(ctx cont
 		requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: migplan.Name, Namespace: migplan.Namespace}})
 	}
 	return requests
+}
+
+func (r *StorageMigPlanReconciler) hasActiveMigrations(ctx context.Context, plan *migrations.VirtualMachineStorageMigrationPlan) (bool, error) {
+	migrationsForPlan, err := r.listMigrationsForPlan(ctx, plan)
+	if err != nil {
+		return false, err
+	}
+	for _, m := range migrationsForPlan {
+		if m.Status.Phase != migrations.Completed && m.Status.Phase != migrations.Canceled {
+			r.Log.V(3).Info("Found active migration", "migration", m.Name, "phase", m.Status.Phase)
+			return true, nil
+		}
+	}
+	r.Log.V(3).Info("No active migrations found for plan", "plan", plan.Name)
+	return false, nil
+}
+
+func (r *StorageMigPlanReconciler) listMigrationsForPlan(ctx context.Context, plan *migrations.VirtualMachineStorageMigrationPlan) ([]migrations.VirtualMachineStorageMigration, error) {
+	storageMigrationList := &migrations.VirtualMachineStorageMigrationList{}
+	if err := r.List(ctx, storageMigrationList, client.MatchingFields{migrationNameIndexKey: plan.Name}); err != nil {
+		return nil, err
+	}
+	return storageMigrationList.Items, nil
 }
