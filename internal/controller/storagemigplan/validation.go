@@ -131,14 +131,21 @@ func (r *StorageMigPlanReconciler) validateStorageMigrationPossible(ctx context.
 		if err != nil {
 			return err
 		}
+		existingStatusVM, hasExisting := existingStatusVMMap[vm.Name]
 		if len(statusVM.SourcePVCs) == 0 {
-			// If no source PVCs are found, don't add the virtual machine to the plan status.
-			r.Log.V(2).Info("No source PVCs found for virtual machine", "vm", vm.Name)
-			continue
+			// Transient lookup failures mid-swap must not wipe previously recorded
+			// sources — cancel relies on them to revert volumes.
+			if hasExisting && len(existingStatusVM.SourcePVCs) > 0 {
+				r.Log.V(2).Info("No source PVCs found on current VM lookup; preserving existing plan status", "vm", vm.Name)
+				statusVM = existingStatusVM
+			} else {
+				r.Log.V(2).Info("No source PVCs found for virtual machine", "vm", vm.Name)
+				continue
+			}
 		}
 
 		// Check if we need to preserve original source PVCs after migration swap
-		if existingStatusVM, ok := existingStatusVMMap[vm.Name]; ok && len(existingStatusVM.SourcePVCs) > 0 {
+		if hasExisting && len(existingStatusVM.SourcePVCs) > 0 {
 			// Detect if the VM spec has been swapped to use target PVCs.
 			// If the newly computed "source" PVCs don't match the originally recorded sources,
 			// then the swap has happened and we should preserve the original sources.
@@ -147,6 +154,12 @@ func (r *StorageMigPlanReconciler) validateStorageMigrationPossible(ctx context.
 				r.Log.V(3).Info("VM has been swapped to target PVCs, preserving original source PVCs", "vm", vm.Name)
 				statusVM.SourcePVCs = existingStatusVM.SourcePVCs
 			}
+		}
+		// If computed "sources" already equal destinations, the originals were lost —
+		// keep any prior sources that still look like real sources.
+		if sourcesMatchTargets(statusVM) && hasExisting && !sourcesMatchTargets(existingStatusVM) {
+			r.Log.V(2).Info("Computed source PVCs match targets; restoring prior source PVCs", "vm", vm.Name)
+			statusVM.SourcePVCs = existingStatusVM.SourcePVCs
 		}
 		// Add the virtual machine to the appropriate list based on the migration status
 		switch migrationStatus {
@@ -245,6 +258,21 @@ func (r *StorageMigPlanReconciler) getExistingStatusVMMap(plan *migrations.Virtu
 	}
 
 	return existingStatusVMMap
+}
+
+// sourcesMatchTargets reports whether every SourcePVC name equals its paired
+// TargetMigrationPVC destination. That indicates corrupted/mid-flight "sources".
+func sourcesMatchTargets(statusVM migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine) bool {
+	if len(statusVM.SourcePVCs) == 0 || len(statusVM.SourcePVCs) != len(statusVM.TargetMigrationPVCs) {
+		return false
+	}
+	for i, src := range statusVM.SourcePVCs {
+		dest := statusVM.TargetMigrationPVCs[i].DestinationPVC.Name
+		if dest == nil || src.Name != *dest {
+			return false
+		}
+	}
+	return true
 }
 
 // hasVMBeenSwapped checks if the VM spec has been swapped to use target PVCs.
@@ -499,15 +527,17 @@ func (r *StorageMigPlanReconciler) getMigrationStatus(ctx context.Context, plan 
 		return notStarted
 	}
 	for _, storageMigration := range storageMigrationList.Items {
-		if storageMigration.Spec.VirtualMachineStorageMigrationPlanRef != nil &&
-			storageMigration.Spec.VirtualMachineStorageMigrationPlanRef.Name == plan.Name &&
-			(storageMigration.Status.Phase == migrations.WaitForLiveMigrationToComplete ||
-				storageMigration.Status.Phase == migrations.CleanupMigrationResources) {
-			return inProgress
+		if storageMigration.Spec.VirtualMachineStorageMigrationPlanRef == nil ||
+			storageMigration.Spec.VirtualMachineStorageMigrationPlanRef.Name != plan.Name {
+			continue
 		}
-		if storageMigration.Spec.VirtualMachineStorageMigrationPlanRef != nil &&
-			storageMigration.Spec.VirtualMachineStorageMigrationPlanRef.Name == plan.Name &&
-			storageMigration.Status.Phase == migrations.Completed {
+		switch storageMigration.Status.Phase {
+		case migrations.WaitForLiveMigrationToComplete,
+			migrations.CleanupMigrationResources,
+			migrations.Canceling,
+			migrations.CleanupCancelledMigrations:
+			return inProgress
+		case migrations.Completed:
 			return completed
 		}
 	}

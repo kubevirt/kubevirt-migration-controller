@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"path"
 	"slices"
+	"time"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -86,89 +87,89 @@ func (r *StorageMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return reconcile.Result{}, err
 	}
 
-	if migration.DeletionTimestamp != nil {
-		log.V(3).Info("VirtualMachineStorageMigration is being deleted")
-		if migration.Status.Phase == migrations.Canceled || migration.Status.Phase == migrations.Completed {
-			migration.RemoveFinalizer(migrations.VirtualMachineStorageMigrationFinalizer, log)
-			if err := r.Update(context.TODO(), migration); err != nil {
-				return reconcile.Result{}, err
-			}
-			return reconcile.Result{}, nil
-		}
-	}
-
 	origMigration := migration.DeepCopy()
 
-	// Completed.
-	if migration.Status.Phase == migrations.Completed {
+	requeueAfter := NoReQ
+	var migrateErr error
+
+	if migration.DeletionTimestamp != nil &&
+		(migration.Status.Phase == migrations.Canceled || migration.Status.Phase == migrations.Completed) {
+		log.V(3).Info("VirtualMachineStorageMigration is being deleted")
+		migration.RemoveFinalizer(migrations.VirtualMachineStorageMigrationFinalizer)
+	} else if migration.Status.Phase == migrations.Completed {
 		log.V(3).Info("VirtualMachineStorageMigration is completed")
 		return reconcile.Result{}, nil
-	}
-
-	if migration.Spec.VirtualMachineStorageMigrationPlanRef != nil {
-		migration.Spec.VirtualMachineStorageMigrationPlanRef.Namespace = migration.Namespace
 	} else {
-		log.V(3).Info("No plan reference found")
-		return reconcile.Result{}, nil
-	}
-	plan, err := componenthelpers.GetStorageMigrationPlan(ctx, r.Client, migration.Spec.VirtualMachineStorageMigrationPlanRef)
-	if err != nil {
-		return reconcile.Result{}, err
-	}
-
-	if plan != nil {
-		migration.Status.DeleteCondition(migrations.InvalidPlanRef)
-
-		// Owner Reference
-		if err := r.setOwnerReference(plan, migration); err != nil {
-			return reconcile.Result{}, err
+		if migration.Spec.VirtualMachineStorageMigrationPlanRef != nil {
+			migration.Spec.VirtualMachineStorageMigrationPlanRef.Namespace = migration.Namespace
+		} else {
+			log.V(3).Info("No plan reference found")
+			return reconcile.Result{}, nil
 		}
-
-		// Validate
-		r.validate(plan, migration)
-	} else {
-		migration.Status.SetCondition(migrations.Condition{
-			Type:     migrations.InvalidPlanRef,
-			Status:   corev1.ConditionTrue,
-			Reason:   migrations.NotFound,
-			Category: migrations.Critical,
-			Message: fmt.Sprintf("The referenced `virtualMachineStorageMigrationPlanRef` does not exist, subject: %s.",
-				path.Join(migration.Spec.VirtualMachineStorageMigrationPlanRef.Namespace, migration.Spec.VirtualMachineStorageMigrationPlanRef.Name)),
-		})
-	}
-
-	requeueAfter := NoReQ
-
-	// Migrate
-	if !migration.Status.HasBlockerCondition() || migration.DeletionTimestamp != nil {
-		log.V(3).Info("Starting VirtualMachineStorageMigration", "deletionTimestamp", migration.DeletionTimestamp)
-		var err error
-		requeueAfter, err = r.migrate(ctx, plan, migration)
+		plan, err := componenthelpers.GetStorageMigrationPlan(ctx, r.Client, migration.Spec.VirtualMachineStorageMigrationPlanRef)
 		if err != nil {
 			return reconcile.Result{}, err
 		}
-	}
 
-	// Make a copy of the migration object so we can keep the finalizers
-	migrationCopy := migration.DeepCopy()
-	// Apply changes to the status.
-	if !apiequality.Semantic.DeepEqual(migration.Status, origMigration.Status) {
-		log.V(5).Info("Updating VirtualMachineStorageMigration status", "phase", migration.Status.Phase)
-		if err := r.Status().Update(context.TODO(), migration); err != nil {
-			return reconcile.Result{}, err
+		if plan != nil {
+			migration.Status.DeleteCondition(migrations.InvalidPlanRef)
+
+			// Owner Reference
+			if err := r.setOwnerReference(plan, migration); err != nil {
+				return reconcile.Result{}, err
+			}
+
+			// Validate
+			r.validate(plan, migration)
+		} else {
+			migration.Status.SetCondition(migrations.Condition{
+				Type:     migrations.InvalidPlanRef,
+				Status:   corev1.ConditionTrue,
+				Reason:   migrations.NotFound,
+				Category: migrations.Critical,
+				Message: fmt.Sprintf("The referenced `virtualMachineStorageMigrationPlanRef` does not exist, subject: %s.",
+					path.Join(migration.Spec.VirtualMachineStorageMigrationPlanRef.Namespace, migration.Spec.VirtualMachineStorageMigrationPlanRef.Name)),
+			})
 		}
-	}
 
-	// Apply changes to the migration.
-	if !apiequality.Semantic.DeepEqual(migration.ObjectMeta, origMigration.ObjectMeta) {
-		migration.Finalizers = migrationCopy.Finalizers
-		log.V(5).Info("Updating VirtualMachineStorageMigration object metadata", "finalizers", migration.Finalizers)
-		if err := r.Update(context.TODO(), migration); err != nil {
-			return reconcile.Result{}, err
+		// Migrate
+		if !migration.Status.HasBlockerCondition() || migration.DeletionTimestamp != nil {
+			log.V(3).Info("Starting VirtualMachineStorageMigration", "deletionTimestamp", migration.DeletionTimestamp)
+			requeueAfter, migrateErr = r.migrate(ctx, plan, migration)
 		}
 	}
 
 	log.V(5).Info("Reconciling VirtualMachineStorageMigration completed")
+	return r.persistMigration(ctx, origMigration, migration, requeueAfter, migrateErr)
+}
+
+// persistMigration writes metadata then status once each, only when changed.
+// Status is persisted even when migrateErr != nil so phase transitions such as
+// Canceling are not lost across retries. Metadata is written first so
+// Status().Update sees a fresh resourceVersion. Restore desired status after
+// Update — the main-resource response can replace the in-memory object with an
+// empty status (status is a separate subresource).
+func (r *StorageMigrationReconciler) persistMigration(ctx context.Context, orig, migration *migrations.VirtualMachineStorageMigration, requeueAfter time.Duration, migrateErr error) (ctrl.Result, error) {
+	desiredStatus := migration.Status.DeepCopy()
+	statusChanged := !apiequality.Semantic.DeepEqual(orig.Status, *desiredStatus)
+	metaChanged := !apiequality.Semantic.DeepEqual(orig.ObjectMeta, migration.ObjectMeta)
+
+	if metaChanged {
+		r.Log.V(5).Info("Updating VirtualMachineStorageMigration object metadata", "finalizers", migration.Finalizers)
+		if err := r.Update(ctx, migration); err != nil {
+			return reconcile.Result{}, err
+		}
+		migration.Status = *desiredStatus
+	}
+	if statusChanged {
+		r.Log.V(5).Info("Updating VirtualMachineStorageMigration status", "phase", migration.Status.Phase)
+		if err := r.Status().Update(ctx, migration); err != nil {
+			return reconcile.Result{}, err
+		}
+	}
+	if migrateErr != nil {
+		return reconcile.Result{}, migrateErr
+	}
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
