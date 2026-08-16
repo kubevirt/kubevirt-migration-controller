@@ -31,6 +31,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	virtv1 "kubevirt.io/api/core/v1"
+	migrationsv1 "kubevirt.io/api/migrations/v1alpha1"
 	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
 	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
 	"kubevirt.io/kubevirt-migration-controller/test/utils"
@@ -73,6 +74,7 @@ func BuildTestSuite() {
 		utilruntime.Must(cdiv1.AddToScheme(scheme))
 		utilruntime.Must(routev1.AddToScheme(scheme))
 		utilruntime.Must(ocpconfigv1.AddToScheme(scheme))
+		utilruntime.Must(migrationsv1.AddToScheme(scheme))
 		utilruntime.Must(migrations.AddToScheme(scheme))
 		By("checking if cert manager is installed")
 		isCertManagerAlreadyInstalled := utils.IsCertManagerCRDsInstalled(kubectlPath)

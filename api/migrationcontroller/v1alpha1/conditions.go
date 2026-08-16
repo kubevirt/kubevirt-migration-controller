@@ -18,6 +18,7 @@ const (
 	Running         = "Running"
 	Failed          = "Failed"
 	Succeeded       = "Succeeded"
+	DeletionBlocked = "DeletionBlocked"
 )
 
 // Types

@@ -22,7 +22,8 @@ import (
 )
 
 const (
-	VirtualMachineStorageMigrationPlanKind = "VirtualMachineStorageMigrationPlan"
+	VirtualMachineStorageMigrationPlanKind      = "VirtualMachineStorageMigrationPlan"
+	VirtualMachineStorageMigrationPlanFinalizer = "virtualmachinestoragemigrationplan.kubevirt.io/finalizer"
 )
 
 // RetentionPolicy defines what to do with the source DataVolume/PVC after a migration completes.
@@ -141,6 +142,24 @@ func (r *VirtualMachineStorageMigrationPlan) GetSuffix() string {
 		return *r.Status.Suffix
 	}
 	return ""
+}
+
+// AddFinalizer adds the passed in finalizer to the migration plan
+func (r *VirtualMachineStorageMigrationPlan) AddFinalizer(finalizer string) {
+	if HasFinalizer(r, finalizer) {
+		return
+	}
+	r.Finalizers = append(r.Finalizers, finalizer)
+}
+
+// RemoveFinalizer removes the passed in finalizer from the migration plan
+func (r *VirtualMachineStorageMigrationPlan) RemoveFinalizer(finalizer string) {
+	for i, f := range r.Finalizers {
+		if f == finalizer {
+			r.Finalizers = append(r.Finalizers[:i], r.Finalizers[i+1:]...)
+			break
+		}
+	}
 }
 
 // +kubebuilder:object:root=true
