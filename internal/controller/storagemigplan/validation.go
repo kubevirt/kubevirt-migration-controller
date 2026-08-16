@@ -103,6 +103,13 @@ func (r *StorageMigPlanReconciler) validateLiveMigrationPossible(ctx context.Con
 }
 
 func (r *StorageMigPlanReconciler) validateStorageMigrationPossible(ctx context.Context, plan *migrations.VirtualMachineStorageMigrationPlan) error {
+	migrationStatus := r.getMigrationStatus(ctx, plan)
+	r.Log.V(3).Info("Migration status for plan", "plan", plan.Name, "migrationStatus", migrationStatus)
+	if migrationStatus == completed {
+		r.healCompletedMigrations(plan)
+		return nil
+	}
+
 	existingStatusVMMap := r.getExistingStatusVMMap(plan)
 	// Loop over the virtual machines in the plan and validate if the storage migration is possible.
 	plan.Status.ReadyMigrations = make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, 0)
@@ -110,7 +117,6 @@ func (r *StorageMigPlanReconciler) validateStorageMigrationPossible(ctx context.
 	plan.Status.CompletedMigrations = make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, 0)
 	plan.Status.InProgressMigrations = make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, 0)
 	plan.Status.FailedMigrations = make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, 0)
-	migrationStatus := r.getMigrationStatus(ctx, plan)
 	for _, vm := range plan.Spec.VirtualMachines {
 		if reason, message, err := componenthelpers.ValidateStorageMigrationPossibleForVM(ctx, r.Client, vm.Name, plan.Namespace); err != nil {
 			return err
@@ -237,6 +243,23 @@ func (r *StorageMigPlanReconciler) validateStorageMigrationPossible(ctx context.
 		})
 	}
 	return nil
+}
+
+// healCompletedMigrations repopulates CompletedMigrations from the plan spec
+// when a completed plan has an empty list — a state caused by deleteSource
+// retention deleting source PVCs before the status was recorded.
+// Safe to remove after a few releases once no affected plans remain.
+func (r *StorageMigPlanReconciler) healCompletedMigrations(plan *migrations.VirtualMachineStorageMigrationPlan) {
+	if len(plan.Status.CompletedMigrations) > 0 {
+		return
+	}
+	r.Log.Info("Healing empty CompletedMigrations for completed plan", "plan", plan.Name)
+	for _, vm := range plan.Spec.VirtualMachines {
+		plan.Status.CompletedMigrations = append(plan.Status.CompletedMigrations, migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+			VirtualMachineStorageMigrationPlanVirtualMachine: *vm.DeepCopy(),
+			SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{},
+		})
+	}
 }
 
 func (r *StorageMigPlanReconciler) getExistingStatusVMMap(plan *migrations.VirtualMachineStorageMigrationPlan) map[string]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine {
