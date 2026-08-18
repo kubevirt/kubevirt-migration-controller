@@ -440,4 +440,42 @@ var _ = Describe("MultiNamespaceStorageMigPlan Controller", func() {
 			Expect(createdPlan.Spec.VirtualMachines[0].Name).To(Equal(originalVMName))
 		})
 	})
+
+	DescribeTable("multiPlanCompletedByStatus",
+		func(specVMCount, completedCount int, expected bool) {
+			spec := &migrations.VirtualMachineStorageMigrationPlanSpec{
+				VirtualMachines: make([]migrations.VirtualMachineStorageMigrationPlanVirtualMachine, specVMCount),
+			}
+			for i := range spec.VirtualMachines {
+				spec.VirtualMachines[i].Name = fmt.Sprintf("vm-%d", i)
+			}
+			status := &migrations.VirtualMachineStorageMigrationPlanStatus{
+				CompletedMigrations: make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, completedCount),
+			}
+			for i := range status.CompletedMigrations {
+				status.CompletedMigrations[i].VirtualMachineStorageMigrationPlanVirtualMachine.Name = fmt.Sprintf("vm-%d", i)
+			}
+			plan := &migrations.MultiNamespaceVirtualMachineStorageMigrationPlan{
+				Spec: migrations.MultiNamespaceVirtualMachineStorageMigrationPlanSpec{
+					Namespaces: []migrations.VirtualMachineStorageMigrationPlanNamespaceSpec{
+						{
+							Name:                                   testutils.TestNamespace,
+							VirtualMachineStorageMigrationPlanSpec: spec,
+						},
+					},
+				},
+				Status: migrations.MultiNamespaceVirtualMachineStorageMigrationPlanStatus{
+					Namespaces: []migrations.VirtualMachineStorageMigrationPlanNamespaceStatus{
+						{
+							Name:                                     testutils.TestNamespace,
+							VirtualMachineStorageMigrationPlanStatus: status,
+						},
+					},
+				},
+			}
+			Expect(multiPlanCompletedByStatus(plan)).To(Equal(expected))
+		},
+		Entry("false when namespace status is incomplete", 2, 1, false),
+		Entry("true when every namespace is complete", 1, 1, true),
+	)
 })
