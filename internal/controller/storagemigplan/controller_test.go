@@ -18,6 +18,7 @@ package storagemigplan
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -401,4 +402,52 @@ var _ = Describe("StorageMigPlan Controller envtests - with minimal real apiserv
 			[]string{"vm-multidisk"},
 		),
 	)
+
+	DescribeTable("planCompletedByStatus",
+		func(
+			specVMCount int,
+			completedCount int,
+			expected bool,
+		) {
+			specVMs := make([]migrations.VirtualMachineStorageMigrationPlanVirtualMachine, specVMCount)
+			for i := range specVMs {
+				specVMs[i].Name = fmt.Sprintf("vm-%d", i)
+			}
+			completed := make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, completedCount)
+			for i := range completed {
+				completed[i] = completedVMStatus(fmt.Sprintf("vm-%d", i))
+			}
+			plan := &migrations.VirtualMachineStorageMigrationPlan{
+				Spec: migrations.VirtualMachineStorageMigrationPlanSpec{
+					VirtualMachines: specVMs,
+				},
+				Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+					CompletedMigrations: completed,
+				},
+			}
+			Expect(planCompletedByStatus(plan)).To(Equal(expected))
+		},
+		Entry("false when spec has no VMs", 0, 0, false),
+		Entry("false when completed migrations do not cover all VMs", 2, 1, false),
+		Entry("true when every VM is completed", 1, 1, true),
+	)
 })
+
+func completedVMStatus(name string) migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine {
+	return migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+		VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+			Name: name,
+			TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+				{
+					VolumeName: testutils.TestVolumeName,
+					DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+						StorageClassName: ptr.To("test-storage-class"),
+					},
+				},
+			},
+		},
+		SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+			{Name: name + "-source", Namespace: testutils.TestNamespace, VolumeName: testutils.TestVolumeName},
+		},
+	}
+}
