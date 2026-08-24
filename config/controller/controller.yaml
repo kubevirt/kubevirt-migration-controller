@@ -44,6 +44,7 @@ spec:
           capabilities:
             drop:
             - "ALL"
+          readOnlyRootFilesystem: true
         livenessProbe:
           httpGet:
             path: /healthz
