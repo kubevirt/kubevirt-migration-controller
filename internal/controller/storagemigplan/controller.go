@@ -161,7 +161,9 @@ func (r *StorageMigPlanReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 // the in-memory object with an empty status (status is a separate subresource).
 func (r *StorageMigPlanReconciler) persistPlan(ctx context.Context, orig, plan *migrations.VirtualMachineStorageMigrationPlan) (ctrl.Result, error) {
 	desiredStatus := plan.Status.DeepCopy()
-	statusChanged := !apiequality.Semantic.DeepEqual(orig.Status, *desiredStatus)
+	compareStatus := orig.Status.DeepCopy()
+	compareStatus.CopyConditionTimestampsFrom(desiredStatus)
+	statusChanged := !apiequality.Semantic.DeepEqual(*compareStatus, *desiredStatus)
 	metaChanged := !apiequality.Semantic.DeepEqual(orig.ObjectMeta, plan.ObjectMeta)
 
 	if metaChanged {
