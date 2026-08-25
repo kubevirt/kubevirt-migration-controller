@@ -166,6 +166,27 @@ func AllSpecVMsCompleted(
 	return true
 }
 
+// PlanStatusShowsCompleted reports whether status reflects a fully completed plan
+// with no remaining ready, in-progress, failed, or invalid migrations.
+func PlanStatusShowsCompleted(
+	spec []VirtualMachineStorageMigrationPlanVirtualMachine,
+	status *VirtualMachineStorageMigrationPlanStatus,
+) bool {
+	if status == nil {
+		return false
+	}
+	if !AllSpecVMsCompleted(spec, status.CompletedMigrations) {
+		return false
+	}
+	if len(status.ReadyMigrations) > 0 ||
+		len(status.InProgressMigrations) > 0 ||
+		len(status.FailedMigrations) > 0 ||
+		len(status.InvalidMigrations) > 0 {
+		return false
+	}
+	return true
+}
+
 func (r *VirtualMachineStorageMigrationPlan) GetSuffix() string {
 	if r.Status.Suffix != nil {
 		return *r.Status.Suffix
