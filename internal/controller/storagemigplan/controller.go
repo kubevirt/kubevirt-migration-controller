@@ -82,11 +82,7 @@ func (r *StorageMigPlanReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	origPlan := plan.DeepCopy()
 
 	if plan.DeletionTimestamp == nil {
-		completed, err := r.isPlanCompleted(ctx, plan)
-		if err != nil {
-			return reconcile.Result{}, err
-		}
-		if completed {
+		if planCompletedByStatus(plan) {
 			log.V(3).Info("Skipping reconcile for completed plan", "plan", plan.Name)
 			return reconcile.Result{}, nil
 		}
@@ -331,20 +327,7 @@ func (r *StorageMigPlanReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func planCompletedByStatus(plan *migrations.VirtualMachineStorageMigrationPlan) bool {
-	return migrations.AllSpecVMsCompleted(plan.Spec.VirtualMachines, plan.Status.CompletedMigrations)
-}
-
-// isPlanCompleted reports whether every VM in the plan is recorded as completed
-// and no child migration is still active.
-func (r *StorageMigPlanReconciler) isPlanCompleted(ctx context.Context, plan *migrations.VirtualMachineStorageMigrationPlan) (bool, error) {
-	if !planCompletedByStatus(plan) {
-		return false, nil
-	}
-	active, err := r.hasActiveMigrations(ctx, plan)
-	if err != nil {
-		return false, err
-	}
-	return !active, nil
+	return migrations.PlanStatusShowsCompleted(plan.Spec.VirtualMachines, &plan.Status)
 }
 
 // IndexFields registers field indexes required by StorageMigPlanReconciler List queries.
