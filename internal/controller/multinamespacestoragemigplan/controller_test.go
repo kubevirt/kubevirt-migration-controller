@@ -560,6 +560,117 @@ var _ = Describe("MultiNamespaceStorageMigPlan Controller", func() {
 			Expect(k8sClient.Get(ctx, nn, after)).To(Succeed())
 			Expect(after.ResourceVersion).To(Equal(rvBefore))
 		})
+
+		It("should reconcile when completed status has in-progress migrations", func() {
+			const settledPlanName = "active-multi-plan"
+			nn := types.NamespacedName{Name: settledPlanName, Namespace: testutils.TestNamespace}
+			multiPlan := newMultiNamespacePlanOptions(settledPlanName).
+				withNamespaceSpec(newTestVMSpec("vm-0", nil)).
+				build()
+			Expect(k8sClient.Create(ctx, multiPlan)).To(Succeed())
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			namespacePlanName := migrations.GetNamespacedPlanName(settledPlanName, testutils.TestNamespace)
+			namespacePlan := &migrations.VirtualMachineStorageMigrationPlan{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: namespacePlanName, Namespace: testutils.TestNamespace}, namespacePlan)).To(Succeed())
+
+			vmStatus := completedNamespaceVMStatus("vm-0")
+			completedNSStatus := &migrations.VirtualMachineStorageMigrationPlanStatus{
+				CompletedMigrations:  []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{vmStatus},
+				InProgressMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{vmStatus},
+			}
+			namespacePlan.Status = *completedNSStatus.DeepCopy()
+			Expect(k8sClient.Status().Update(ctx, namespacePlan)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, nn, multiPlan)).To(Succeed())
+			multiPlan.Status.Namespaces = []migrations.VirtualMachineStorageMigrationPlanNamespaceStatus{{
+				Name:                                     testutils.TestNamespace,
+				VirtualMachineStorageMigrationPlanStatus: completedNSStatus.DeepCopy(),
+			}}
+			Expect(k8sClient.Status().Update(ctx, multiPlan)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, nn, multiPlan)).To(Succeed())
+			rvBefore := multiPlan.ResourceVersion
+
+			completed, err := reconciler.isMultiPlanCompleted(ctx, multiPlan)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(completed).To(BeFalse())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			after := &migrations.MultiNamespaceVirtualMachineStorageMigrationPlan{}
+			Expect(k8sClient.Get(ctx, nn, after)).To(Succeed())
+			Expect(after.ResourceVersion).To(Equal(rvBefore))
+		})
+
+		It("should reconcile completed plan marked for deletion", func() {
+			const settledPlanName = "deleting-multi-plan"
+			nn := types.NamespacedName{Name: settledPlanName, Namespace: testutils.TestNamespace}
+			multiPlan := newMultiNamespacePlanOptions(settledPlanName).
+				withNamespaceSpec(newTestVMSpec("vm-0", nil)).
+				build()
+			Expect(k8sClient.Create(ctx, multiPlan)).To(Succeed())
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			namespacePlanName := migrations.GetNamespacedPlanName(settledPlanName, testutils.TestNamespace)
+			namespacePlan := &migrations.VirtualMachineStorageMigrationPlan{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: namespacePlanName, Namespace: testutils.TestNamespace}, namespacePlan)).To(Succeed())
+
+			completedNSStatus := &migrations.VirtualMachineStorageMigrationPlanStatus{
+				CompletedMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+					completedNamespaceVMStatus("vm-0"),
+				},
+			}
+			namespacePlan.Status = *completedNSStatus.DeepCopy()
+			Expect(k8sClient.Status().Update(ctx, namespacePlan)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, nn, multiPlan)).To(Succeed())
+			multiPlan.Status.Namespaces = []migrations.VirtualMachineStorageMigrationPlanNamespaceStatus{{
+				Name:                                     testutils.TestNamespace,
+				VirtualMachineStorageMigrationPlanStatus: completedNSStatus.DeepCopy(),
+			}}
+			Expect(k8sClient.Status().Update(ctx, multiPlan)).To(Succeed())
+
+			migration := &migrations.VirtualMachineStorageMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "deleting-multi-plan-migration",
+					Namespace: testutils.TestNamespace,
+				},
+				Spec: migrations.VirtualMachineStorageMigrationSpec{
+					VirtualMachineStorageMigrationPlanRef: &corev1.ObjectReference{Name: namespacePlanName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, migration)).To(Succeed())
+			migration.Status.Phase = migrations.Completed
+			Expect(k8sClient.Status().Update(ctx, migration)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, nn, multiPlan)).To(Succeed())
+			completed, err := reconciler.isMultiPlanCompleted(ctx, multiPlan)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(completed).To(BeTrue())
+
+			multiPlan.Finalizers = []string{"test.finalizer"}
+			Expect(k8sClient.Update(ctx, multiPlan)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, multiPlan)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, nn, multiPlan)).To(Succeed())
+			Expect(multiPlan.DeletionTimestamp).NotTo(BeNil())
+			multiPlan.Status.Namespaces = nil
+			Expect(k8sClient.Status().Update(ctx, multiPlan)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			after := &migrations.MultiNamespaceVirtualMachineStorageMigrationPlan{}
+			Expect(k8sClient.Get(ctx, nn, after)).To(Succeed())
+			Expect(after.Status.Namespaces).To(HaveLen(1))
+			Expect(after.Status.Namespaces[0].Name).To(Equal(testutils.TestNamespace))
+		})
 	})
 })
 
