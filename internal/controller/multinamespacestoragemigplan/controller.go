@@ -121,7 +121,9 @@ func (r *MultiNamespaceStorageMigPlanReconciler) Reconcile(ctx context.Context, 
 	}
 
 	planStatusCopy := plan.Status.DeepCopy()
-	if !apiequality.Semantic.DeepEqual(plan.Status, originalPlan.Status) {
+	compareStatus := originalPlan.Status.DeepCopy()
+	compareStatus.CopyConditionTimestampsFrom(&plan.Status)
+	if !apiequality.Semantic.DeepEqual(*compareStatus, plan.Status) {
 		log.V(5).Info("Updating MultiNamespaceVirtualMachineStorageMigrationPlan status")
 		if err := r.Status().Update(ctx, plan); err != nil {
 			return reconcile.Result{}, err
@@ -129,7 +131,7 @@ func (r *MultiNamespaceStorageMigPlanReconciler) Reconcile(ctx context.Context, 
 	}
 	plan.Status = *planStatusCopy
 
-	if !apiequality.Semantic.DeepEqual(originalPlan, plan) {
+	if !apiequality.Semantic.DeepEqual(originalPlan.ObjectMeta, plan.ObjectMeta) {
 		if err := r.Update(ctx, plan); err != nil {
 			return reconcile.Result{}, err
 		}
