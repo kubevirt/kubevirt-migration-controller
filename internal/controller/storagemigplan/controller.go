@@ -331,10 +331,7 @@ func (r *StorageMigPlanReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func planCompletedByStatus(plan *migrations.VirtualMachineStorageMigrationPlan) bool {
-	if len(plan.Spec.VirtualMachines) == 0 {
-		return false
-	}
-	return len(plan.Status.CompletedMigrations) == len(plan.Spec.VirtualMachines)
+	return migrations.AllSpecVMsCompleted(plan.Spec.VirtualMachines, plan.Status.CompletedMigrations)
 }
 
 // isPlanCompleted reports whether every VM in the plan is recorded as completed

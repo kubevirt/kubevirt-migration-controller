@@ -131,6 +131,8 @@ func (r *MultiNamespaceStorageMigPlanReconciler) Reconcile(ctx context.Context, 
 	}
 	plan.Status = *planStatusCopy
 
+	// Status is persisted above. Spec must not be mutated during reconcile; only
+	// compare metadata for the main-resource Update.
 	if !apiequality.Semantic.DeepEqual(originalPlan.ObjectMeta, plan.ObjectMeta) {
 		if err := r.Update(ctx, plan); err != nil {
 			return reconcile.Result{}, err
@@ -293,10 +295,10 @@ func multiPlanCompletedByStatus(plan *migrations.MultiNamespaceVirtualMachineSto
 }
 
 func namespacePlanStatusCompleted(spec *migrations.VirtualMachineStorageMigrationPlanSpec, status *migrations.VirtualMachineStorageMigrationPlanStatus) bool {
-	if len(spec.VirtualMachines) == 0 {
+	if spec == nil || status == nil {
 		return false
 	}
-	return len(status.CompletedMigrations) == len(spec.VirtualMachines)
+	return migrations.AllSpecVMsCompleted(spec.VirtualMachines, status.CompletedMigrations)
 }
 
 func (r *MultiNamespaceStorageMigPlanReconciler) isMultiPlanCompleted(ctx context.Context, plan *migrations.MultiNamespaceVirtualMachineStorageMigrationPlan) (bool, error) {
