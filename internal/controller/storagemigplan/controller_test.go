@@ -503,6 +503,57 @@ var _ = Describe("StorageMigPlan Controller envtests - with minimal real apiserv
 			Expect(k8sClient.Get(ctx, typeNamespacedName, after)).To(Succeed())
 			Expect(after.ResourceVersion).To(Equal(rvBefore))
 		})
+
+		It("should reconcile when completed status has in-progress migrations", func() {
+			updated := &migrations.VirtualMachineStorageMigrationPlan{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+			vmStatus := completedVMStatus(testutils.TestVMName)
+			updated.Status.CompletedMigrations = []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{vmStatus}
+			updated.Status.InProgressMigrations = []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{vmStatus}
+			Expect(k8sClient.Status().Update(ctx, updated)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+			rvBefore := updated.ResourceVersion
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			after := &migrations.VirtualMachineStorageMigrationPlan{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, after)).To(Succeed())
+			Expect(after.ResourceVersion).NotTo(Equal(rvBefore))
+		})
+
+		It("should reconcile completed plan deletion", func() {
+			updated := &migrations.VirtualMachineStorageMigrationPlan{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+			updated.Finalizers = []string{migrations.VirtualMachineStorageMigrationPlanFinalizer}
+			updated.Status.CompletedMigrations = []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+				completedVMStatus(testutils.TestVMName),
+			}
+			Expect(k8sClient.Update(ctx, updated)).To(Succeed())
+			Expect(k8sClient.Status().Update(ctx, updated)).To(Succeed())
+
+			migration := &migrations.VirtualMachineStorageMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "completed-plan-deletion-migration",
+					Namespace: testutils.TestNamespace,
+				},
+				Spec: migrations.VirtualMachineStorageMigrationSpec{
+					VirtualMachineStorageMigrationPlanRef: &corev1.ObjectReference{Name: testutils.TestMigPlanName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, migration)).To(Succeed())
+			migration.Status.Phase = migrations.Completed
+			Expect(k8sClient.Status().Update(ctx, migration)).To(Succeed())
+
+			Expect(k8sClient.Delete(ctx, migplan)).To(Succeed())
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			err = k8sClient.Get(ctx, typeNamespacedName, updated)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		})
 	})
 })
 

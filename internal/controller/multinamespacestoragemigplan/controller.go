@@ -298,7 +298,7 @@ func namespacePlanStatusCompleted(spec *migrations.VirtualMachineStorageMigratio
 	if spec == nil || status == nil {
 		return false
 	}
-	return migrations.AllSpecVMsCompleted(spec.VirtualMachines, status.CompletedMigrations)
+	return migrations.PlanStatusShowsCompleted(spec.VirtualMachines, status)
 }
 
 func (r *MultiNamespaceStorageMigPlanReconciler) isMultiPlanCompleted(ctx context.Context, plan *migrations.MultiNamespaceVirtualMachineStorageMigrationPlan) (bool, error) {
@@ -313,11 +313,7 @@ func (r *MultiNamespaceStorageMigPlanReconciler) isMultiPlanCompleted(ctx contex
 		if namespacedPlan == nil {
 			return false, nil
 		}
-		active, err := r.hasActiveMigrationsForPlan(ctx, namespacedPlan)
-		if err != nil {
-			return false, err
-		}
-		if active {
+		if !namespacePlanStatusCompleted(namespace.VirtualMachineStorageMigrationPlanSpec, &namespacedPlan.Status) {
 			return false, nil
 		}
 	}
@@ -342,21 +338,4 @@ func (r *MultiNamespaceStorageMigPlanReconciler) getMultiNamespaceVirtualMachine
 	return []reconcile.Request{
 		{NamespacedName: types.NamespacedName{Name: multiNamespaceStorageMigPlan.Name, Namespace: multiNamespaceStorageMigPlan.Namespace}},
 	}
-}
-
-func (r *MultiNamespaceStorageMigPlanReconciler) hasActiveMigrationsForPlan(ctx context.Context, plan *migrations.VirtualMachineStorageMigrationPlan) (bool, error) {
-	storageMigrationList := &migrations.VirtualMachineStorageMigrationList{}
-	if err := r.List(ctx, storageMigrationList, client.InNamespace(plan.Namespace)); err != nil {
-		return false, err
-	}
-	for _, migration := range storageMigrationList.Items {
-		if migration.Spec.VirtualMachineStorageMigrationPlanRef == nil ||
-			migration.Spec.VirtualMachineStorageMigrationPlanRef.Name != plan.Name {
-			continue
-		}
-		if migration.Status.Phase != migrations.Completed && migration.Status.Phase != migrations.Canceled {
-			return true, nil
-		}
-	}
-	return false, nil
 }
