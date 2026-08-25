@@ -24,6 +24,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	kvalidation "k8s.io/apimachinery/pkg/util/validation"
@@ -478,4 +479,105 @@ var _ = Describe("MultiNamespaceStorageMigPlan Controller", func() {
 		Entry("false when namespace status is incomplete", 2, 1, false),
 		Entry("true when every namespace is complete", 1, 1, true),
 	)
+
+	It("returns false when completed migrations have wrong VM names", func() {
+		spec := &migrations.VirtualMachineStorageMigrationPlanSpec{
+			VirtualMachines: []migrations.VirtualMachineStorageMigrationPlanVirtualMachine{{Name: "vm-0"}},
+		}
+		status := &migrations.VirtualMachineStorageMigrationPlanStatus{
+			CompletedMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{{
+				VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{Name: "wrong-vm"},
+			}},
+		}
+		plan := &migrations.MultiNamespaceVirtualMachineStorageMigrationPlan{
+			Spec: migrations.MultiNamespaceVirtualMachineStorageMigrationPlanSpec{
+				Namespaces: []migrations.VirtualMachineStorageMigrationPlanNamespaceSpec{{
+					Name:                                   testutils.TestNamespace,
+					VirtualMachineStorageMigrationPlanSpec: spec,
+				}},
+			},
+			Status: migrations.MultiNamespaceVirtualMachineStorageMigrationPlanStatus{
+				Namespaces: []migrations.VirtualMachineStorageMigrationPlanNamespaceStatus{{
+					Name:                                     testutils.TestNamespace,
+					VirtualMachineStorageMigrationPlanStatus: status,
+				}},
+			},
+		}
+		Expect(multiPlanCompletedByStatus(plan)).To(BeFalse())
+	})
+
+	Context("completed plan reconcile", func() {
+		It("should not persist when reconciling a settled completed multi-namespace plan", func() {
+			const settledPlanName = "settled-multi-plan"
+			nn := types.NamespacedName{Name: settledPlanName, Namespace: testutils.TestNamespace}
+			multiPlan := newMultiNamespacePlanOptions(settledPlanName).
+				withNamespaceSpec(newTestVMSpec("vm-0", nil)).
+				build()
+			Expect(k8sClient.Create(ctx, multiPlan)).To(Succeed())
+
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			namespacePlanName := migrations.GetNamespacedPlanName(settledPlanName, testutils.TestNamespace)
+			namespacePlan := &migrations.VirtualMachineStorageMigrationPlan{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: namespacePlanName, Namespace: testutils.TestNamespace}, namespacePlan)).To(Succeed())
+
+			completedNSStatus := &migrations.VirtualMachineStorageMigrationPlanStatus{
+				CompletedMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+					completedNamespaceVMStatus("vm-0"),
+				},
+			}
+			namespacePlan.Status = *completedNSStatus.DeepCopy()
+			Expect(k8sClient.Status().Update(ctx, namespacePlan)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, nn, multiPlan)).To(Succeed())
+			multiPlan.Status.Namespaces = []migrations.VirtualMachineStorageMigrationPlanNamespaceStatus{{
+				Name:                                     testutils.TestNamespace,
+				VirtualMachineStorageMigrationPlanStatus: completedNSStatus.DeepCopy(),
+			}}
+			Expect(k8sClient.Status().Update(ctx, multiPlan)).To(Succeed())
+
+			migration := &migrations.VirtualMachineStorageMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "settled-multi-plan-migration",
+					Namespace: testutils.TestNamespace,
+				},
+				Spec: migrations.VirtualMachineStorageMigrationSpec{
+					VirtualMachineStorageMigrationPlanRef: &corev1.ObjectReference{Name: namespacePlanName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, migration)).To(Succeed())
+			migration.Status.Phase = migrations.Completed
+			Expect(k8sClient.Status().Update(ctx, migration)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, nn, multiPlan)).To(Succeed())
+			rvBefore := multiPlan.ResourceVersion
+
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			after := &migrations.MultiNamespaceVirtualMachineStorageMigrationPlan{}
+			Expect(k8sClient.Get(ctx, nn, after)).To(Succeed())
+			Expect(after.ResourceVersion).To(Equal(rvBefore))
+		})
+	})
 })
+
+func completedNamespaceVMStatus(name string) migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine {
+	return migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
+		VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+			Name: name,
+			TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{{
+				VolumeName: "test-volume",
+				DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+					Name: ptr.To("target-pvc"),
+				},
+			}},
+		},
+		SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{{
+			Name:       name + "-source",
+			Namespace:  testutils.TestNamespace,
+			VolumeName: "test-volume",
+		}},
+	}
+}
