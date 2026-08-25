@@ -137,6 +137,35 @@ type VirtualMachineStorageMigrationPlanStatus struct {
 	Conditions `json:",inline"`
 }
 
+// AllSpecVMsCompleted reports whether completed lists every spec VM by name exactly once.
+func AllSpecVMsCompleted(
+	spec []VirtualMachineStorageMigrationPlanVirtualMachine,
+	completed []VirtualMachineStorageMigrationPlanStatusVirtualMachine,
+) bool {
+	if len(spec) == 0 {
+		return false
+	}
+	if len(completed) != len(spec) {
+		return false
+	}
+	completedByName := make(map[string]struct{}, len(completed))
+	for _, vm := range completed {
+		if vm.Name == "" {
+			return false
+		}
+		if _, exists := completedByName[vm.Name]; exists {
+			return false
+		}
+		completedByName[vm.Name] = struct{}{}
+	}
+	for _, vm := range spec {
+		if _, ok := completedByName[vm.Name]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func (r *VirtualMachineStorageMigrationPlan) GetSuffix() string {
 	if r.Status.Suffix != nil {
 		return *r.Status.Suffix
