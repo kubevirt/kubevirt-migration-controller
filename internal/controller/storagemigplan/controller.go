@@ -81,13 +81,6 @@ func (r *StorageMigPlanReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	origPlan := plan.DeepCopy()
 
-	if plan.DeletionTimestamp == nil {
-		if planCompletedByStatus(plan) {
-			log.V(3).Info("Skipping reconcile for completed plan", "plan", plan.Name)
-			return reconcile.Result{}, nil
-		}
-	}
-
 	if plan.DeletionTimestamp != nil {
 		active, err := r.hasActiveMigrations(ctx, plan)
 		if err != nil {
@@ -157,9 +150,7 @@ func (r *StorageMigPlanReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 // the in-memory object with an empty status (status is a separate subresource).
 func (r *StorageMigPlanReconciler) persistPlan(ctx context.Context, orig, plan *migrations.VirtualMachineStorageMigrationPlan) (ctrl.Result, error) {
 	desiredStatus := plan.Status.DeepCopy()
-	compareStatus := orig.Status.DeepCopy()
-	compareStatus.CopyConditionTimestampsFrom(desiredStatus)
-	statusChanged := !apiequality.Semantic.DeepEqual(*compareStatus, *desiredStatus)
+	statusChanged := !apiequality.Semantic.DeepEqual(orig.Status, *desiredStatus)
 	metaChanged := !apiequality.Semantic.DeepEqual(orig.ObjectMeta, plan.ObjectMeta)
 
 	if metaChanged {
@@ -324,10 +315,6 @@ func (r *StorageMigPlanReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return err
 	}
 	return nil
-}
-
-func planCompletedByStatus(plan *migrations.VirtualMachineStorageMigrationPlan) bool {
-	return migrations.PlanStatusShowsCompleted(plan.Spec.VirtualMachines, &plan.Status)
 }
 
 // IndexFields registers field indexes required by StorageMigPlanReconciler List queries.
