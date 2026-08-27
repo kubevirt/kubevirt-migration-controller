@@ -76,17 +76,6 @@ func (r *MultiNamespaceStorageMigPlanReconciler) Reconcile(ctx context.Context, 
 	}
 	originalPlan := plan.DeepCopy()
 
-	if plan.DeletionTimestamp == nil {
-		completed, err := r.isMultiPlanCompleted(ctx, plan)
-		if err != nil {
-			return reconcile.Result{}, err
-		}
-		if completed {
-			log.V(3).Info("Skipping reconcile for completed multi-namespace plan", "plan", plan.Name)
-			return reconcile.Result{}, nil
-		}
-	}
-
 	invalidNamespaceFound := false
 	for _, namespace := range plan.Spec.Namespaces {
 		if message, err := r.validateNamespace(ctx, &namespace); err != nil {
@@ -121,9 +110,7 @@ func (r *MultiNamespaceStorageMigPlanReconciler) Reconcile(ctx context.Context, 
 	}
 
 	planStatusCopy := plan.Status.DeepCopy()
-	compareStatus := originalPlan.Status.DeepCopy()
-	compareStatus.CopyConditionTimestampsFrom(&plan.Status)
-	if !apiequality.Semantic.DeepEqual(*compareStatus, plan.Status) {
+	if !apiequality.Semantic.DeepEqual(plan.Status, originalPlan.Status) {
 		log.V(5).Info("Updating MultiNamespaceVirtualMachineStorageMigrationPlan status")
 		if err := r.Status().Update(ctx, plan); err != nil {
 			return reconcile.Result{}, err
@@ -131,9 +118,7 @@ func (r *MultiNamespaceStorageMigPlanReconciler) Reconcile(ctx context.Context, 
 	}
 	plan.Status = *planStatusCopy
 
-	// Status is persisted above. Spec must not be mutated during reconcile; only
-	// compare metadata for the main-resource Update.
-	if !apiequality.Semantic.DeepEqual(originalPlan.ObjectMeta, plan.ObjectMeta) {
+	if !apiequality.Semantic.DeepEqual(originalPlan, plan) {
 		if err := r.Update(ctx, plan); err != nil {
 			return reconcile.Result{}, err
 		}
@@ -266,58 +251,6 @@ func (r *MultiNamespaceStorageMigPlanReconciler) SetupWithManager(mgr ctrl.Manag
 		return err
 	}
 	return nil
-}
-
-func multiPlanCompletedByStatus(plan *migrations.MultiNamespaceVirtualMachineStorageMigrationPlan) bool {
-	if len(plan.Spec.Namespaces) == 0 {
-		return false
-	}
-	statusByNamespace := make(map[string]*migrations.VirtualMachineStorageMigrationPlanStatus, len(plan.Status.Namespaces))
-	for i := range plan.Status.Namespaces {
-		nsStatus := plan.Status.Namespaces[i]
-		if nsStatus.VirtualMachineStorageMigrationPlanStatus != nil {
-			statusByNamespace[nsStatus.Name] = nsStatus.VirtualMachineStorageMigrationPlanStatus
-		}
-	}
-	for _, specNs := range plan.Spec.Namespaces {
-		if specNs.VirtualMachineStorageMigrationPlanSpec == nil {
-			return false
-		}
-		nsStatus, ok := statusByNamespace[specNs.Name]
-		if !ok {
-			return false
-		}
-		if !namespacePlanStatusCompleted(specNs.VirtualMachineStorageMigrationPlanSpec, nsStatus) {
-			return false
-		}
-	}
-	return true
-}
-
-func namespacePlanStatusCompleted(spec *migrations.VirtualMachineStorageMigrationPlanSpec, status *migrations.VirtualMachineStorageMigrationPlanStatus) bool {
-	if spec == nil || status == nil {
-		return false
-	}
-	return migrations.PlanStatusShowsCompleted(spec.VirtualMachines, status)
-}
-
-func (r *MultiNamespaceStorageMigPlanReconciler) isMultiPlanCompleted(ctx context.Context, plan *migrations.MultiNamespaceVirtualMachineStorageMigrationPlan) (bool, error) {
-	if !multiPlanCompletedByStatus(plan) {
-		return false, nil
-	}
-	for _, namespace := range plan.Spec.Namespaces {
-		namespacedPlan, err := r.getNamespacePlan(ctx, plan.Name, &namespace)
-		if err != nil {
-			return false, err
-		}
-		if namespacedPlan == nil {
-			return false, nil
-		}
-		if !namespacePlanStatusCompleted(namespace.VirtualMachineStorageMigrationPlanSpec, &namespacedPlan.Status) {
-			return false, nil
-		}
-	}
-	return true, nil
 }
 
 func (r *MultiNamespaceStorageMigPlanReconciler) getMultiNamespaceVirtualMachineStorageMigrationsPlanForStorageMigration(ctx context.Context, plan *migrations.VirtualMachineStorageMigrationPlan) []reconcile.Request {
