@@ -137,56 +137,6 @@ type VirtualMachineStorageMigrationPlanStatus struct {
 	Conditions `json:",inline"`
 }
 
-// AllSpecVMsCompleted reports whether completed lists every spec VM by name exactly once.
-func AllSpecVMsCompleted(
-	spec []VirtualMachineStorageMigrationPlanVirtualMachine,
-	completed []VirtualMachineStorageMigrationPlanStatusVirtualMachine,
-) bool {
-	if len(spec) == 0 {
-		return false
-	}
-	if len(completed) != len(spec) {
-		return false
-	}
-	completedByName := make(map[string]struct{}, len(completed))
-	for _, vm := range completed {
-		if vm.Name == "" {
-			return false
-		}
-		if _, exists := completedByName[vm.Name]; exists {
-			return false
-		}
-		completedByName[vm.Name] = struct{}{}
-	}
-	for _, vm := range spec {
-		if _, ok := completedByName[vm.Name]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
-// PlanStatusShowsCompleted reports whether status reflects a fully completed plan
-// with no remaining ready, in-progress, failed, or invalid migrations.
-func PlanStatusShowsCompleted(
-	spec []VirtualMachineStorageMigrationPlanVirtualMachine,
-	status *VirtualMachineStorageMigrationPlanStatus,
-) bool {
-	if status == nil {
-		return false
-	}
-	if !AllSpecVMsCompleted(spec, status.CompletedMigrations) {
-		return false
-	}
-	if len(status.ReadyMigrations) > 0 ||
-		len(status.InProgressMigrations) > 0 ||
-		len(status.FailedMigrations) > 0 ||
-		len(status.InvalidMigrations) > 0 {
-		return false
-	}
-	return true
-}
-
 func (r *VirtualMachineStorageMigrationPlan) GetSuffix() string {
 	if r.Status.Suffix != nil {
 		return *r.Status.Suffix
