@@ -114,8 +114,6 @@ func (r *StorageMigPlanReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			plan.AddFinalizer(migrations.VirtualMachineStorageMigrationPlanFinalizer)
 		}
 
-		plan.Status.CompletedOutOf = fmt.Sprintf("%d/%d", len(plan.Status.CompletedMigrations), len(plan.Spec.VirtualMachines))
-
 		if plan.Status.Suffix == nil {
 			// Generate suffix
 			suffix := rand.String(4)
@@ -141,6 +139,8 @@ func (r *StorageMigPlanReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		if err := r.processMigrations(ctx, plan); err != nil {
 			return reconcile.Result{}, err
 		}
+
+		plan.Status.CompletedOutOf = fmt.Sprintf("%d/%d", len(plan.Status.CompletedMigrations), len(plan.Spec.VirtualMachines))
 
 		if r.shouldUpdateRefresh(plan) {
 			r.setRefreshAnnotations(plan)
