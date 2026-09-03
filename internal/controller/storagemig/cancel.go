@@ -32,47 +32,70 @@ func (t *Task) isVMOnSourceVolumes(ctx context.Context, vmName string) (bool, er
 	if err := t.Client.Get(ctx, types.NamespacedName{Namespace: t.Owner.Namespace, Name: vmName}, vm); err != nil {
 		return false, err
 	}
-	cancelMigrations := t.getCancellableMigrations()
-	for _, planVM := range cancelMigrations {
+	for _, planVM := range t.getCancellableMigrations() {
 		if planVM.Name != vmName {
 			continue
 		}
-		if len(planVM.SourcePVCs) == 0 {
-			return false, nil
+		return isVMOnSourceVolumesForPlan(vm, planVM), nil
+	}
+	return false, nil
+}
+
+// vmUnchangedByPlanMigration reports VMs that never switched to this plan's target
+// volumes. They may still run on PVCs from a prior completed migration and must
+// not be reverted using this plan's recorded source names.
+func (t *Task) vmUnchangedByPlanMigration(ctx context.Context, vmName string) (bool, error) {
+	vm := &virtv1.VirtualMachine{}
+	if err := t.Client.Get(ctx, types.NamespacedName{Namespace: t.Owner.Namespace, Name: vmName}, vm); err != nil {
+		return false, err
+	}
+	for _, planVM := range t.getCancellableMigrations() {
+		if planVM.Name != vmName {
+			continue
 		}
-		// Target claim names are authoritative: if the VM still references any
-		// planned destination, we are mid-flight regardless of SourcePVCs (which
-		// can be corrupted to target names after a plan status race).
 		if vmReferencesTargetVolumes(vm, planVM) {
 			return false, nil
 		}
-		// All planned volumes must already reference the original source names.
-		for _, sourcePVC := range planVM.SourcePVCs {
-			matched := false
-			for _, vmVolume := range vm.Spec.Template.Spec.Volumes {
-				if sourcePVC.VolumeName != "" && vmVolume.Name != sourcePVC.VolumeName {
-					continue
-				}
-				claimName := volumeClaimName(vmVolume)
-				if claimName == "" {
-					continue
-				}
-				if claimName == sourcePVC.Name {
-					matched = true
-					break
-				}
-				if sourcePVC.VolumeName != "" {
-					// Correct volume name but still on the target claim.
-					break
-				}
-			}
-			if !matched {
-				return false, nil
-			}
-		}
-		return true, nil
+		return !isVMOnSourceVolumesForPlan(vm, planVM), nil
 	}
 	return false, nil
+}
+
+func isVMOnSourceVolumesForPlan(vm *virtv1.VirtualMachine, planVM migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine) bool {
+	if len(planVM.SourcePVCs) == 0 {
+		return false
+	}
+	// Target claim names are authoritative: if the VM still references any
+	// planned destination, we are mid-flight regardless of SourcePVCs (which
+	// can be corrupted to target names after a plan status race).
+	if vmReferencesTargetVolumes(vm, planVM) {
+		return false
+	}
+	// All planned volumes must already reference the original source names.
+	for _, sourcePVC := range planVM.SourcePVCs {
+		matched := false
+		for _, vmVolume := range vm.Spec.Template.Spec.Volumes {
+			if sourcePVC.VolumeName != "" && vmVolume.Name != sourcePVC.VolumeName {
+				continue
+			}
+			claimName := volumeClaimName(vmVolume)
+			if claimName == "" {
+				continue
+			}
+			if claimName == sourcePVC.Name {
+				matched = true
+				break
+			}
+			if sourcePVC.VolumeName != "" {
+				// Correct volume name but still on the target claim.
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
 }
 
 func vmReferencesTargetVolumes(vm *virtv1.VirtualMachine, planVM migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine) bool {
@@ -155,6 +178,16 @@ func (t *Task) cancelLiveMigration(ctx context.Context, vmName string) error {
 	cancelMigrations := t.getCancellableMigrations()
 	for _, planVM := range cancelMigrations {
 		if planVM.Name == vmName {
+			if vmReferencesTargetVolumes(vm, planVM) {
+				// VM still on this plan's targets — revert back to source.
+			} else if !isVMOnSourceVolumesForPlan(vm, planVM) {
+				t.Log.Info("Skipping volume revert; VM was not moved by this plan",
+					"vm", vmName)
+				return nil
+			} else {
+				t.Log.V(4).Info("VM already on plan source volumes", "vm", vmName)
+				return nil
+			}
 			if err := t.recoverCorruptedSourcePVCs(vm, &planVM); err != nil {
 				return err
 			}
