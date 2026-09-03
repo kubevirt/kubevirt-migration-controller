@@ -214,6 +214,7 @@ var _ = Describe("StorageMigPlan Controller envtests - with minimal real apiserv
 			Expect(reconciler.Client.Get(ctx, typeNamespacedName, updated)).To(Succeed())
 			Expect(updated.Status.CompletedMigrations).To(HaveLen(1))
 			Expect(updated.Status.CompletedMigrations[0].Name).To(Equal(testutils.TestVMName))
+			Expect(updated.Status.CompletedOutOf).To(Equal("1/1"))
 		})
 	})
 
