@@ -238,6 +238,24 @@ var _ = Describe("Manager", Ordered, func() {
 				"controller_runtime_reconcile_total",
 			))
 		})
+
+		It("should have readOnlyRootFilesystem enabled", func() {
+			By("verifying the controller deployment has readOnlyRootFilesystem set to true")
+			deploymentKey := types.NamespacedName{
+				Name:      serviceAccountName,
+				Namespace: *migrationControllerNamespace,
+			}
+			deployment := &appsv1.Deployment{}
+			Expect(c.Get(context.TODO(), deploymentKey, deployment)).To(Succeed())
+			for _, container := range deployment.Spec.Template.Spec.Containers {
+				Expect(container.SecurityContext).NotTo(BeNil(),
+					"container %s should have SecurityContext", container.Name)
+				Expect(container.SecurityContext.ReadOnlyRootFilesystem).NotTo(BeNil(),
+					"container %s should have ReadOnlyRootFilesystem set", container.Name)
+				Expect(*container.SecurityContext.ReadOnlyRootFilesystem).To(BeTrue(),
+					"container %s should have ReadOnlyRootFilesystem=true", container.Name)
+			}
+		})
 	})
 })
 
