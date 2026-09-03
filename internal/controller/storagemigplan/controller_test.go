@@ -556,6 +556,42 @@ var _ = Describe("StorageMigPlan Controller envtests - with minimal real apiserv
 			Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		})
 	})
+
+	Describe("syncOfflineMigrationWaitingCondition", func() {
+		It("mirrors OfflineMigrationWaiting from the migration onto the plan", func() {
+			plan := &migrations.VirtualMachineStorageMigrationPlan{}
+			lastMigration := migrations.VirtualMachineStorageMigration{}
+			lastMigration.Status.SetCondition(migrations.Condition{
+				Type:     migrations.OfflineMigrationWaiting,
+				Status:   corev1.ConditionTrue,
+				Category: migrations.Warn,
+				Message:  "One or more offline VMs are waiting for first consumer (WaitForFirstConsumer storage class). Start the following VMs to allow data copying to complete the plan: vm-offline",
+			})
+
+			syncOfflineMigrationWaitingCondition(plan, lastMigration)
+
+			cond := plan.Status.FindCondition(migrations.OfflineMigrationWaiting)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(corev1.ConditionTrue))
+			Expect(cond.Category).To(Equal(migrations.Warn))
+			Expect(cond.Message).To(ContainSubstring("Start the following VMs"))
+			Expect(cond.Message).To(ContainSubstring("vm-offline"))
+		})
+
+		It("clears OfflineMigrationWaiting from the plan when the migration no longer has it", func() {
+			plan := &migrations.VirtualMachineStorageMigrationPlan{}
+			plan.Status.SetCondition(migrations.Condition{
+				Type:     migrations.OfflineMigrationWaiting,
+				Status:   corev1.ConditionTrue,
+				Category: migrations.Warn,
+				Message:  "stale waiting condition",
+			})
+
+			syncOfflineMigrationWaitingCondition(plan, migrations.VirtualMachineStorageMigration{})
+
+			Expect(plan.Status.FindCondition(migrations.OfflineMigrationWaiting)).To(BeNil())
+		})
+	})
 })
 
 func completedVMStatus(name string) migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine {

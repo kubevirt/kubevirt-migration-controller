@@ -51,6 +51,18 @@ const (
 // Phase defines phase of the migration
 type Phase string
 
+// OfflineMigrationSourcePVC is the name/namespace of a source PVC recorded for offline migration.
+type OfflineMigrationSourcePVC struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+}
+
+// OfflineMigrationInfo tracks source PVCs for an offline-migrating VM (captured before the VM is rewritten).
+type OfflineMigrationInfo struct {
+	VMName     string                      `json:"vmName"`
+	SourcePVCs []OfflineMigrationSourcePVC `json:"sourcePVCs"`
+}
+
 // VirtualMachineStorageMigrationStatus defines the observed state of VirtualMachineStorageMigration
 type VirtualMachineStorageMigrationStatus struct {
 	// The conditions of the migration.
@@ -65,6 +77,8 @@ type VirtualMachineStorageMigrationStatus struct {
 	CompletedMigrations []string `json:"completedMigrations,omitempty"`
 	// The cancelled migrations.
 	CancelledMigrations []string `json:"cancelledMigrations,omitempty"`
+	// OfflineMigrations records source PVCs for offline VMs before the VM volumes are swapped.
+	OfflineMigrations []OfflineMigrationInfo `json:"offlineMigrations,omitempty"`
 }
 
 // RunningVirtualMachineMigration has the name of the VirtualMachine and the progress of the migration.

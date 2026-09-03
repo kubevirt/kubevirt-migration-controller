@@ -18,6 +18,7 @@ package storagemig
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -237,26 +238,44 @@ func (t *Task) handleBeginLiveMigrationPhase(ctx context.Context) error {
 
 func (t *Task) handleWaitForLiveMigrationToCompletePhase(ctx context.Context) error {
 	runningMigrations := make([]migrations.RunningVirtualMachineMigration, 0)
+	waitingVMs := make([]string, 0)
 	for _, vm := range t.Owner.Status.RunningMigrations {
 		vmiExists, err := componenthelpers.VMIExists(ctx, t.Client, vm.Name, t.Owner.Namespace)
 		if err != nil {
 			return err
 		}
 		offline := !vmiExists
-		var completed bool
+
 		if offline {
 			t.Log.V(5).Info("Checking if offline migration is completed", "vm", vm.Name)
-			completed, err = t.isOfflineMigrationCompleted(ctx, vm.Name)
+
+			waiting, err := t.isOfflineMigrationWaitingForFirstConsumer(ctx, vm.Name)
+			if err != nil {
+				return err
+			}
+			if waiting {
+				waitingVMs = append(waitingVMs, vm.Name)
+				runningMigrations = append(runningMigrations, vm)
+				continue
+			}
+
+			completed, err := t.isOfflineMigrationCompleted(ctx, vm.Name)
+			if err != nil {
+				return err
+			}
+			if !completed {
+				runningMigrations = append(runningMigrations, vm)
+				continue
+			}
 		} else {
 			t.Log.V(5).Info("Checking if live migration is completed", "vm", vm.Name)
-			completed, err = t.isLiveMigrationCompleted(ctx, vm.Name)
-		}
-		if err != nil {
-			return err
-		}
-		if !completed {
-			runningMigrations = append(runningMigrations, vm)
-			if !offline {
+
+			completed, err := t.isLiveMigrationCompleted(ctx, vm.Name)
+			if err != nil {
+				return err
+			}
+			if !completed {
+				runningMigrations = append(runningMigrations, vm)
 				progress, err := t.getLastObservedProgressPercent(ctx, vm.Name, t.Owner.Namespace)
 				if err != nil {
 					return err
@@ -264,10 +283,26 @@ func (t *Task) handleWaitForLiveMigrationToCompletePhase(ctx context.Context) er
 				if progress != "" {
 					runningMigrations[len(runningMigrations)-1].Progress = progress
 				}
+				continue
 			}
-			continue
 		}
+
 		t.Owner.Status.CompletedMigrations = append(t.Owner.Status.CompletedMigrations, vm.Name)
+	}
+	// SetCondition preserves LastTransitionTime when status/message are unchanged; only delete when clear.
+	if len(waitingVMs) > 0 {
+		t.Owner.Status.SetCondition(migrations.Condition{
+			Type:     migrations.OfflineMigrationWaiting,
+			Status:   corev1.ConditionTrue,
+			Category: migrations.Warn,
+			Reason:   "WaitForFirstConsumer",
+			Message: fmt.Sprintf(
+				"One or more offline VMs are waiting for first consumer (WaitForFirstConsumer storage class). Start the following VMs to allow data copying to complete the plan: %s",
+				strings.Join(waitingVMs, ", "),
+			),
+		})
+	} else {
+		t.Owner.Status.DeleteCondition(migrations.OfflineMigrationWaiting)
 	}
 	t.Owner.Status.RunningMigrations = runningMigrations
 	if len(runningMigrations) == 0 {
@@ -415,23 +450,62 @@ func (t *Task) cleanupCompletedVMIMs(ctx context.Context) error {
 	return nil
 }
 
-// getSourcePVCsForCompletedMigrations returns the source PVCs for the given completed VM names from the plan status.
-// It only checks CompletedMigrations because we don't want to delete the source PVC for in-progress or ready migrations.
-func (t *Task) getSourcePVCsForCompletedMigrations(completedVMNames []string) []migrations.VirtualMachineStorageMigrationPlanSourcePVC {
+// gatherSourcePVCsForCompletedMigrations returns source PVCs for completed VMs (offline from migration
+// status, live from plan status) and how many live VMs are still missing from the plan.
+func (t *Task) gatherSourcePVCsForCompletedMigrations(completedVMNames []string) ([]migrations.VirtualMachineStorageMigrationPlanSourcePVC, int) {
 	completedSet := make(map[string]struct{})
 	for _, name := range completedVMNames {
 		completedSet[name] = struct{}{}
 	}
+
+	offlineHandled := make(map[string]struct{})
 	var sourcePVCs []migrations.VirtualMachineStorageMigrationPlanSourcePVC
-	appendSourcePVCs := func(vms []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine) {
-		for _, vm := range vms {
+
+	// Offline migrations: use source PVCs recorded in the migration status — always reliable.
+	for _, info := range t.Owner.Status.OfflineMigrations {
+		if _, ok := completedSet[info.VMName]; !ok {
+			continue
+		}
+		if len(info.SourcePVCs) == 0 {
+			continue
+		}
+		offlineHandled[info.VMName] = struct{}{}
+		for _, pvc := range info.SourcePVCs {
+			sourcePVCs = append(sourcePVCs, migrations.VirtualMachineStorageMigrationPlanSourcePVC{
+				Name:      pvc.Name,
+				Namespace: pvc.Namespace,
+			})
+		}
+	}
+
+	// Live migrations: use the plan's CompletedMigrations list (may need to wait for plan controller).
+	planCompletedVMs := make(map[string]bool)
+	if t.Plan != nil {
+		for _, vm := range t.Plan.Status.CompletedMigrations {
 			if _, ok := completedSet[vm.Name]; ok {
-				sourcePVCs = append(sourcePVCs, vm.SourcePVCs...)
+				if _, ok := offlineHandled[vm.Name]; !ok {
+					if len(vm.SourcePVCs) == 0 {
+						continue
+					}
+					planCompletedVMs[vm.Name] = true
+					sourcePVCs = append(sourcePVCs, vm.SourcePVCs...)
+				}
 			}
 		}
 	}
-	appendSourcePVCs(t.Plan.Status.CompletedMigrations)
-	return sourcePVCs
+
+	// Count live-migration VMs whose source PVCs are not yet in the plan.
+	missingCount := 0
+	for vmName := range completedSet {
+		if _, ok := offlineHandled[vmName]; ok {
+			continue
+		}
+		if !planCompletedVMs[vmName] {
+			missingCount++
+		}
+	}
+
+	return sourcePVCs, missingCount
 }
 
 // deleteSourceDataVolumesAndPVCs deletes the source DataVolume (if it exists) or source PVC for each completed migration.
@@ -439,17 +513,18 @@ func (t *Task) deleteSourceDataVolumesAndPVCs(ctx context.Context, completedMigr
 	if t.Plan == nil {
 		return nil
 	}
-	sourcePVCs := t.getSourcePVCsForCompletedMigrations(completedMigrationsVMNames)
+	sourcePVCs, missingCount := t.gatherSourcePVCsForCompletedMigrations(completedMigrationsVMNames)
 	t.Log.V(3).Info("Deleting source DataVolume and PVCs", "sourcePVCs", sourcePVCs)
 
-	// If we have completed migrations but no source PVCs, the plan controller may not have updated yet.
-	// Requeue to give it time to move VMs from InProgress/Ready to Completed.
-	if len(completedMigrationsVMNames) > 0 && len(sourcePVCs) == 0 {
-		t.Log.Info("WARNING: retentionPolicy is deleteSource but no source PVCs found for completed migrations",
+	// If live-migration VMs have not yet appeared in plan.Status.CompletedMigrations,
+	// requeue and wait for the plan controller to catch up.
+	if missingCount > 0 {
+		t.Log.Info("WARNING: retentionPolicy is deleteSource but source PVCs not yet available for completed migrations",
 			"completedMigrations", completedMigrationsVMNames,
-			"planCompletedCount", len(t.Plan.Status.CompletedMigrations))
+			"planCompletedCount", len(t.Plan.Status.CompletedMigrations),
+			"missingVMCount", missingCount)
 		t.Requeue = PollReQ
-		return fmt.Errorf("source PVCs not yet available in plan status for %d completed migrations", len(completedMigrationsVMNames))
+		return fmt.Errorf("source PVCs not yet available in plan status for %d completed migrations", missingCount)
 	}
 
 	// Deduplicate by namespace/name

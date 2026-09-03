@@ -189,6 +189,7 @@ func (r *StorageMigPlanReconciler) processMigrations(ctx context.Context, plan *
 	}
 	slices.SortFunc(storageMigrationList.Items, compareStorageMigrations)
 	if len(storageMigrationList.Items) == 0 {
+		plan.Status.DeleteCondition(migrations.OfflineMigrationWaiting)
 		plan.Status.SetCondition(progressCondition(corev1.ConditionFalse, "no storage migrations found"))
 		return nil
 	} else if plan.Status.HasCondition(migrations.Ready) {
@@ -197,15 +198,34 @@ func (r *StorageMigPlanReconciler) processMigrations(ctx context.Context, plan *
 		plan.Status.SetCondition(progressCondition(corev1.ConditionFalse, "plan is not ready"))
 	}
 
-	if err := r.updateReadyCompletedMigrations(plan, storageMigrationList.Items[len(storageMigrationList.Items)-1]); err != nil {
+	lastMigration := storageMigrationList.Items[len(storageMigrationList.Items)-1]
+	if err := r.updateReadyCompletedMigrations(plan, lastMigration); err != nil {
 		return err
 	}
+	// Mirror WFFC waiting from the newest/active migration (see compareStorageMigrations).
+	syncOfflineMigrationWaitingCondition(plan, lastMigration)
 
 	if len(plan.Status.CompletedMigrations) == len(plan.Spec.VirtualMachines) && len(plan.Spec.VirtualMachines) > 0 {
 		plan.Status.SetCondition(progressCondition(corev1.ConditionFalse, "all storage migrations completed"))
 		plan.Status.SetCondition(readyCondition(corev1.ConditionFalse, "all storage migrations completed"))
 	}
 	return nil
+}
+
+// syncOfflineMigrationWaitingCondition mirrors OfflineMigrationWaiting from the active migration onto the plan.
+func syncOfflineMigrationWaitingCondition(plan *migrations.VirtualMachineStorageMigrationPlan, lastMigration migrations.VirtualMachineStorageMigration) {
+	if cond := lastMigration.Status.FindCondition(migrations.OfflineMigrationWaiting); cond != nil && cond.Status == corev1.ConditionTrue {
+		// SetCondition preserves LastTransitionTime when the condition is unchanged.
+		plan.Status.SetCondition(migrations.Condition{
+			Type:     migrations.OfflineMigrationWaiting,
+			Status:   corev1.ConditionTrue,
+			Category: migrations.Warn,
+			Message:  cond.Message,
+			Reason:   cond.Reason,
+		})
+		return
+	}
+	plan.Status.DeleteCondition(migrations.OfflineMigrationWaiting)
 }
 
 func readyCondition(status corev1.ConditionStatus, message string) migrations.Condition {
