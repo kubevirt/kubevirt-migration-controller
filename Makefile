@@ -136,6 +136,11 @@ test: manifests generate fmt vet setup-envtest ginkgo ## Run tests.
 	@echo "Current path [$(PWD)] Running unit tests ginkgo $(GINKGO) saving results to $(ARTIFACTS)/junit.functest.xml"
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" $(GINKGO) -v --coverprofile=.coverage-report.out --output-dir=$(ARTIFACTS) --junit-report=junit.functest.xml  $$(go list ./... | grep -v /e2e | awk '{gsub("kubevirt.io/kubevirt-migration-controller/", ""); print}')
 
+.PHONY: test-fast
+test-fast: setup-envtest ## Run tests without verbose output (enables caching).
+	@echo "Running unit tests with caching enabled"
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e)
+
 .PHONY: test-e2e
 test-e2e: manifests generate fmt vet gotestsum ## Run the e2e tests
 	@echo "Running e2e tests gotestsum $(GOTESTSUM)" saving results to $(ARTIFACTS)/junit.functest.xml
@@ -390,7 +395,20 @@ cluster-up: ## Start a kubevirtci cluster. set KUBEVIRT_PROVIDER environment var
 
 .PHONY: cluster-sync
 cluster-sync: ## Build the controller/importer/cloner, and push it into a running cluster. The cluster must be up before running a cluster sync. Also generates a manifest and applies it to the running cluster after pushing the images to it.
-	DOCKER_REPO=$(DOCKER_REPO) IMG=$(IMG) ./cluster-sync/sync.sh
+	DOCKER_REPO=$(DOCKER_REPO) IMG=$(IMG) TAG=$(TAG) ./cluster-sync/sync.sh
+
+.PHONY: cluster-sync-operator
+cluster-sync-operator: ## Deploy the migration controller using the operator from quay.io. Uses latest operator image, or release-specific version if on a release branch.
+	DOCKER_REPO=$(DOCKER_REPO) \
+	IMG=$(IMG) \
+	TAG=$(TAG) \
+	OPERATOR_TAG_OVERRIDE=$(OPERATOR_TAG_OVERRIDE) \
+	OPERATOR_BRANCH_OVERRIDE=$(OPERATOR_BRANCH_OVERRIDE) \
+	CONTROLLER_IMAGE=$(CONTROLLER_IMAGE) \
+	OPERATOR_NAMESPACE=$(OPERATOR_NAMESPACE) \
+	OPERATOR_REPO=$(OPERATOR_REPO) \
+	CERT_MANAGER_VERSION=$(CERT_MANAGER_VERSION) \
+	./cluster-sync/sync-operator.sh
 
 .PHONY: cluster-down
 cluster-down: ## Stop the cluster, doing a make cluster-down && make cluster-up will basically restart the cluster into an empty fresh state.

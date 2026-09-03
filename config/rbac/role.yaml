@@ -164,3 +164,11 @@ rules:
   verbs:
   - list
   - watch
+- apiGroups:
+  - migrations.kubevirt.io
+  resources:
+  - migcontrollers
+  verbs:
+  - get
+  - list
+  - watch
