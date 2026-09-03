@@ -154,6 +154,44 @@ func (r *Conditions) FindConditionByCategory(cndCategory string) []*Condition {
 	return cndList
 }
 
+// CopyConditionTimestampsFrom copies LastTransitionTime from matching conditions in other.
+// Use before status equality checks so reconcile does not persist when only timestamps changed.
+func (r *Conditions) CopyConditionTimestampsFrom(other Conditions) {
+	for i := range r.List {
+		if otherCond := other.FindCondition(r.List[i].Type); otherCond != nil {
+			r.List[i].LastTransitionTime = otherCond.LastTransitionTime
+		}
+	}
+}
+
+// CopyConditionTimestampsFrom copies condition timestamps from other into r.
+func (r *VirtualMachineStorageMigrationPlanStatus) CopyConditionTimestampsFrom(other *VirtualMachineStorageMigrationPlanStatus) {
+	if other == nil {
+		return
+	}
+	r.Conditions.CopyConditionTimestampsFrom(other.Conditions)
+}
+
+// CopyConditionTimestampsFrom copies condition timestamps from other into r,
+// including nested namespace plan statuses.
+func (r *MultiNamespaceVirtualMachineStorageMigrationPlanStatus) CopyConditionTimestampsFrom(other *MultiNamespaceVirtualMachineStorageMigrationPlanStatus) {
+	if other == nil {
+		return
+	}
+	r.Conditions.CopyConditionTimestampsFrom(other.Conditions)
+	otherByName := make(map[string]*VirtualMachineStorageMigrationPlanStatus, len(other.Namespaces))
+	for i := range other.Namespaces {
+		otherByName[other.Namespaces[i].Name] = other.Namespaces[i].VirtualMachineStorageMigrationPlanStatus
+	}
+	for i := range r.Namespaces {
+		otherNs := otherByName[r.Namespaces[i].Name]
+		if r.Namespaces[i].VirtualMachineStorageMigrationPlanStatus == nil || otherNs == nil {
+			continue
+		}
+		r.Namespaces[i].VirtualMachineStorageMigrationPlanStatus.CopyConditionTimestampsFrom(otherNs)
+	}
+}
+
 // Set (add/update) the specified condition to the collection.
 func (r *Conditions) SetCondition(condition Condition) {
 	if r.List == nil {
