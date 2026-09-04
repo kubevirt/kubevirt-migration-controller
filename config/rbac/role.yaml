@@ -113,6 +113,8 @@ rules:
   - migrations.kubevirt.io
   resources:
   - virtualmachinestoragemigrations/finalizers
+  - multinamespacevirtualmachinestoragemigrationplans/finalizers
+  - multinamespacevirtualmachinestoragemigrations/finalizers
   verbs:
   - update
 - apiGroups:
