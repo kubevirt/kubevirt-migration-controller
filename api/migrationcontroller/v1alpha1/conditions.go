@@ -23,8 +23,9 @@ const (
 
 // Types
 const (
-	InvalidPlanRef = "InvalidPlanRef"
-	PlanNotReady   = "PlanNotReady"
+	InvalidPlanRef       = "InvalidPlanRef"
+	PlanNotReady         = "PlanNotReady"
+	ConflictingMigration = "ConflictingMigration"
 )
 
 // Reasons
