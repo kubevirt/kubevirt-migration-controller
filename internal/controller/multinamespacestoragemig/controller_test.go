@@ -23,6 +23,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	kvalidation "k8s.io/apimachinery/pkg/util/validation"
@@ -57,6 +58,184 @@ var _ = Describe("MultiNamespaceStorageMigration controller", func() {
 			}
 		})
 
+		Context("Cascade delete on multi-namespace migration deletion", func() {
+			It("should delete child VirtualMachineStorageMigration resources and remove finalizer when multi-namespace migration is deleted", func() {
+				planName := "test-cascade-delete-mig-plan"
+				migrationName := "test-cascade-delete-migration"
+				nn := types.NamespacedName{Name: migrationName, Namespace: testutils.TestNamespace}
+				multiPlan := createMultiNamespaceStorageMigrationPlan(planName)
+				multiMigration := createMultiNamespaceStorageMigration(migrationName, planName)
+				Expect(reconciler.Client.Create(ctx, multiPlan)).To(Succeed())
+				Expect(reconciler.Client.Create(ctx, multiMigration)).To(Succeed())
+
+				By("Reconciling to add finalizer and create child migration")
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+				Expect(err).NotTo(HaveOccurred())
+
+				childMigrationName := migrations.GetNamespacedPlanName(planName, testutils.TestNamespace)
+				childMigration := &migrations.VirtualMachineStorageMigration{}
+				Expect(reconciler.Client.Get(ctx, types.NamespacedName{Name: childMigrationName, Namespace: testutils.TestNamespace}, childMigration)).To(Succeed())
+
+				Expect(reconciler.Client.Get(ctx, nn, multiMigration)).To(Succeed())
+				Expect(multiMigration.Finalizers).To(ContainElement(multiNamespaceStorageMigrationFinalizer))
+
+				By("Deleting the multi-namespace migration (sets DeletionTimestamp)")
+				Expect(reconciler.Client.Delete(ctx, multiMigration)).To(Succeed())
+
+				By("Reconciling to run finalizer: delete children and remove finalizer")
+				_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying child migration was deleted")
+				childMigration = &migrations.VirtualMachineStorageMigration{}
+				err = reconciler.Client.Get(ctx, types.NamespacedName{Name: childMigrationName, Namespace: testutils.TestNamespace}, childMigration)
+				Expect(k8serrors.IsNotFound(err)).To(BeTrue())
+
+				By("Verifying parent was fully removed after finalizer cleanup")
+				err = reconciler.Client.Get(ctx, nn, multiMigration)
+				Expect(k8serrors.IsNotFound(err)).To(BeTrue())
+			})
+
+			It("should delete owned child migrations when the referenced plan is already gone", func() {
+				planName := "test-plan-gone-mig-plan"
+				migrationName := "test-plan-gone-migration"
+				nn := types.NamespacedName{Name: migrationName, Namespace: testutils.TestNamespace}
+				childMigrationName := migrations.GetNamespacedPlanName(planName, testutils.TestNamespace)
+
+				multiPlan := createMultiNamespaceStorageMigrationPlan(planName)
+				multiMigration := createMultiNamespaceStorageMigration(migrationName, planName)
+				Expect(reconciler.Client.Create(ctx, multiPlan)).To(Succeed())
+				Expect(reconciler.Client.Create(ctx, multiMigration)).To(Succeed())
+
+				By("Reconciling to add finalizer and create child migration")
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(reconciler.Client.Get(ctx, nn, multiMigration)).To(Succeed())
+				parentUID := multiMigration.UID
+
+				By("Deleting the referenced multi-namespace plan first")
+				Expect(reconciler.Client.Delete(ctx, multiPlan)).To(Succeed())
+
+				By("Deleting the multi-namespace migration")
+				Expect(reconciler.Client.Delete(ctx, multiMigration)).To(Succeed())
+
+				By("Reconciling to run finalizer using UID label discovery")
+				_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying child migration was deleted without plan lookup")
+				childMigration := &migrations.VirtualMachineStorageMigration{}
+				err = reconciler.Client.Get(ctx, types.NamespacedName{Name: childMigrationName, Namespace: testutils.TestNamespace}, childMigration)
+				Expect(k8serrors.IsNotFound(err)).To(BeTrue())
+
+				By("Verifying parent was fully removed after finalizer cleanup")
+				err = reconciler.Client.Get(ctx, nn, multiMigration)
+				Expect(k8serrors.IsNotFound(err)).To(BeTrue())
+				Expect(string(parentUID)).NotTo(BeEmpty())
+			})
+		})
+
+		Context("Stale child replacement", func() {
+			It("should replace orphaned child migration when parent is recreated with a new UID", func() {
+				planName := "test-stale-child-mig-plan"
+				migrationName := "test-stale-child-migration"
+				nn := types.NamespacedName{Name: migrationName, Namespace: testutils.TestNamespace}
+				childMigrationName := migrations.GetNamespacedPlanName(planName, testutils.TestNamespace)
+
+				By("Creating an orphaned child migration from a previous parent")
+				staleChild := &migrations.VirtualMachineStorageMigration{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      childMigrationName,
+						Namespace: testutils.TestNamespace,
+						Labels: map[string]string{
+							multiNamespaceStorageMigrationUIDLabel: "stale-parent-uid",
+						},
+						Annotations: map[string]string{
+							multiNamespaceStorageMigrationNameAnnotation:      migrationName,
+							multiNamespaceStorageMigrationNamespaceAnnotation: testutils.TestNamespace,
+						},
+					},
+					Spec: migrations.VirtualMachineStorageMigrationSpec{
+						VirtualMachineStorageMigrationPlanRef: &corev1.ObjectReference{
+							Name:      childMigrationName,
+							Namespace: testutils.TestNamespace,
+						},
+					},
+					Status: migrations.VirtualMachineStorageMigrationStatus{
+						Phase: migrations.Completed,
+					},
+				}
+				Expect(reconciler.Client.Create(ctx, staleChild)).To(Succeed())
+
+				By("Creating a new multi-namespace plan and migration with the same name")
+				multiPlan := createMultiNamespaceStorageMigrationPlan(planName)
+				multiMigration := createMultiNamespaceStorageMigration(migrationName, planName)
+				Expect(reconciler.Client.Create(ctx, multiPlan)).To(Succeed())
+				Expect(reconciler.Client.Create(ctx, multiMigration)).To(Succeed())
+
+				By("Reconciling to add finalizer and replace the stale child migration")
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying the child migration was recreated for the new parent")
+				childMigration := &migrations.VirtualMachineStorageMigration{}
+				Expect(reconciler.Client.Get(ctx, types.NamespacedName{Name: childMigrationName, Namespace: testutils.TestNamespace}, childMigration)).To(Succeed())
+				Expect(reconciler.Client.Get(ctx, nn, multiMigration)).To(Succeed())
+				Expect(childMigration.UID).NotTo(Equal(staleChild.UID))
+				Expect(childMigration.Labels).To(HaveKeyWithValue(multiNamespaceStorageMigrationUIDLabel, string(multiMigration.UID)))
+				Expect(childMigration.Status.Phase).To(BeEmpty())
+			})
+		})
+
+		Context("Unowned migration conflict", func() {
+			It("should mark the parent migration failed when a pre-existing unowned migration blocks creation", func() {
+				planName := "test-unowned-mig-plan"
+				migrationName := "test-unowned-migration"
+				nn := types.NamespacedName{Name: migrationName, Namespace: testutils.TestNamespace}
+				childMigrationName := migrations.GetNamespacedPlanName(planName, testutils.TestNamespace)
+
+				By("Creating a migration with the target name that has no UID label (user-created)")
+				unownedMigration := &migrations.VirtualMachineStorageMigration{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      childMigrationName,
+						Namespace: testutils.TestNamespace,
+					},
+					Spec: migrations.VirtualMachineStorageMigrationSpec{
+						VirtualMachineStorageMigrationPlanRef: &corev1.ObjectReference{
+							Name:      childMigrationName,
+							Namespace: testutils.TestNamespace,
+						},
+					},
+				}
+				Expect(reconciler.Client.Create(ctx, unownedMigration)).To(Succeed())
+
+				By("Creating a multi-namespace plan and migration")
+				multiPlan := createMultiNamespaceStorageMigrationPlan(planName)
+				multiMigration := createMultiNamespaceStorageMigration(migrationName, planName)
+				Expect(reconciler.Client.Create(ctx, multiPlan)).To(Succeed())
+				Expect(reconciler.Client.Create(ctx, multiMigration)).To(Succeed())
+
+				By("Reconciling — should detect conflict and mark parent failed")
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying the unowned migration was NOT deleted")
+				existing := &migrations.VirtualMachineStorageMigration{}
+				Expect(reconciler.Client.Get(ctx, types.NamespacedName{Name: childMigrationName, Namespace: testutils.TestNamespace}, existing)).To(Succeed())
+				Expect(existing.UID).To(Equal(unownedMigration.UID))
+
+				By("Verifying the parent migration has a ConflictingMigration condition")
+				Expect(reconciler.Client.Get(ctx, nn, multiMigration)).To(Succeed())
+				condition := multiMigration.Status.FindCondition(migrations.ConflictingMigration)
+				Expect(condition).NotTo(BeNil())
+				Expect(condition.Status).To(Equal(corev1.ConditionTrue))
+				Expect(condition.Reason).To(Equal(migrations.Conflict))
+				Expect(condition.Category).To(Equal(migrations.Critical))
+				Expect(condition.Message).To(ContainSubstring(childMigrationName))
+			})
+		})
+
 		Context("Naming length constraints", func() {
 			It("should respect naming length constraints for namespaced plans", func() {
 				name := strings.Repeat("a", kvalidation.DNS1123SubdomainMaxLength)
@@ -81,6 +260,91 @@ var _ = Describe("MultiNamespaceStorageMigration controller", func() {
 
 				Expect(reconciler.Client.Get(ctx, nn, multinsMigration)).To(Succeed())
 				Expect(mig.Labels).To(HaveKeyWithValue(multiNamespaceStorageMigrationUIDLabel, BeEquivalentTo(multinsMigration.UID)))
+			})
+		})
+
+		Context("Cross-namespace parent lookup", func() {
+			It("should correctly find parent in different namespace via annotations", func() {
+				const crossNamespace = "cross-namespace-test"
+				planName := "cross-ns-plan"
+				migrationName := "cross-ns-migration"
+				parentNamespace := testutils.TestNamespace
+
+				By("Creating a second namespace for the child migration")
+				testutils.CreateMigPlanNamespace(ctx, reconciler.Client, crossNamespace)
+				defer testutils.DeleteMigPlanNamespace(ctx, reconciler.Client, crossNamespace)
+
+				By("Creating multi-namespace plan and migration in parent namespace")
+				multiPlan := &migrations.MultiNamespaceVirtualMachineStorageMigrationPlan{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      planName,
+						Namespace: parentNamespace,
+					},
+					Spec: migrations.MultiNamespaceVirtualMachineStorageMigrationPlanSpec{
+						Namespaces: []migrations.VirtualMachineStorageMigrationPlanNamespaceSpec{
+							{
+								Name: crossNamespace,
+								VirtualMachineStorageMigrationPlanSpec: &migrations.VirtualMachineStorageMigrationPlanSpec{
+									VirtualMachines: []migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+										{
+											Name: "test-vm",
+											TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{
+												{
+													VolumeName:     "dv-disk",
+													DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				}
+				multiMigration := &migrations.MultiNamespaceVirtualMachineStorageMigration{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      migrationName,
+						Namespace: parentNamespace,
+					},
+					Spec: migrations.MultiNamespaceVirtualMachineStorageMigrationSpec{
+						MultiNamespaceVirtualMachineStorageMigrationPlanRef: &corev1.ObjectReference{
+							Name: planName,
+						},
+					},
+				}
+				Expect(reconciler.Client.Create(ctx, multiPlan)).To(Succeed())
+				Expect(reconciler.Client.Create(ctx, multiMigration)).To(Succeed())
+
+				By("Reconciling to add finalizer and create child migration in cross namespace")
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{
+					NamespacedName: types.NamespacedName{Name: migrationName, Namespace: parentNamespace},
+				})
+				Expect(err).NotTo(HaveOccurred())
+
+				By("Verifying child migration exists in the cross namespace")
+				childMigrationName := migrations.GetNamespacedPlanName(planName, crossNamespace)
+				childMigration := &migrations.VirtualMachineStorageMigration{}
+				Expect(reconciler.Client.Get(ctx, types.NamespacedName{
+					Name:      childMigrationName,
+					Namespace: crossNamespace,
+				}, childMigration)).To(Succeed())
+
+				By("Verifying child migration has correct annotations pointing to parent namespace")
+				Expect(childMigration.Annotations).To(HaveKeyWithValue(multiNamespaceStorageMigrationNameAnnotation, migrationName))
+				Expect(childMigration.Annotations).To(HaveKeyWithValue(multiNamespaceStorageMigrationNamespaceAnnotation, parentNamespace),
+					"Child migration annotation should point to parent's namespace, not child's namespace")
+
+				By("Verifying child migration has correct UID label")
+				Expect(reconciler.Client.Get(ctx, types.NamespacedName{Name: migrationName, Namespace: parentNamespace}, multiMigration)).To(Succeed())
+				Expect(childMigration.Labels).To(HaveKeyWithValue(multiNamespaceStorageMigrationUIDLabel, string(multiMigration.UID)))
+
+				By("Testing watch function correctly finds parent in different namespace")
+				requests := reconciler.getVirtualMachineStorageMigrationsForMultiNamespaceStorageMigration(ctx, childMigration)
+				Expect(requests).To(HaveLen(1))
+				Expect(requests[0].NamespacedName).To(Equal(types.NamespacedName{
+					Name:      migrationName,
+					Namespace: parentNamespace,
+				}), "Watch function should return parent migration in parent namespace")
 			})
 		})
 	})
