@@ -588,6 +588,10 @@ func (in *VirtualMachineStorageMigrationPlanStatus) DeepCopyInto(out *VirtualMac
 		*out = new(string)
 		**out = **in
 	}
+	if in.RefreshEndTime != nil {
+		in, out := &in.RefreshEndTime, &out.RefreshEndTime
+		*out = (*in).DeepCopy()
+	}
 	in.Conditions.DeepCopyInto(&out.Conditions)
 }
 
