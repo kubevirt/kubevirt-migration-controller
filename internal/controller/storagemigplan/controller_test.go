@@ -78,7 +78,7 @@ var _ = Describe("StorageMigPlan Controller envtests - with minimal real apiserv
 			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
 			Expect(updated.Annotations[RefreshStartTimeAnnotation]).To(BeEmpty())
 			updated.Annotations = map[string]string{
-				RefreshStartTimeAnnotation: time.Now().Add(-time.Minute).Format(time.RFC3339Nano),
+				RefreshStartTimeAnnotation: time.Now().Add(-time.Minute).Format(metav1.RFC3339Micro),
 			}
 			Expect(k8sClient.Update(ctx, updated)).To(Succeed())
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{
@@ -88,7 +88,7 @@ var _ = Describe("StorageMigPlan Controller envtests - with minimal real apiserv
 			updated = &migrations.VirtualMachineStorageMigrationPlan{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
 			Expect(updated.Annotations[RefreshStartTimeAnnotation]).ToNot(BeEmpty())
-			Expect(updated.Annotations[RefreshEndTimeAnnotation]).NotTo(BeEmpty())
+			Expect(updated.Status.RefreshEndTime).NotTo(BeNil())
 		})
 
 		It("should skip reconcile if plan cannot be found", func() {
