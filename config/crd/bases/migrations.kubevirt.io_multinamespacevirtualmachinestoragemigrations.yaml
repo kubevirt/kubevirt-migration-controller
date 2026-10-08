@@ -187,6 +187,34 @@ spec:
                     name:
                       description: The name of the namespace to migrate.
                       type: string
+                    offlineMigrations:
+                      description: OfflineMigrations records source PVCs for offline
+                        VMs before the VM volumes are swapped.
+                      items:
+                        description: OfflineMigrationInfo tracks source PVCs for an
+                          offline-migrating VM (captured before the VM is rewritten).
+                        properties:
+                          sourcePVCs:
+                            items:
+                              description: OfflineMigrationSourcePVC is the name/namespace
+                                of a source PVC recorded for offline migration.
+                              properties:
+                                name:
+                                  type: string
+                                namespace:
+                                  type: string
+                              required:
+                              - name
+                              - namespace
+                              type: object
+                            type: array
+                          vmName:
+                            type: string
+                        required:
+                        - sourcePVCs
+                        - vmName
+                        type: object
+                      type: array
                     phase:
                       description: The current phase of the migration.
                       type: string
