@@ -417,6 +417,9 @@ func cleanTargetAnnotations(annotations map[string]string) {
 	delete(annotations, "volume.beta.kubernetes.io/storage-provisioner")
 	delete(annotations, "pv.kubernetes.io/bound-by-controller")
 	delete(annotations, "volume.kubernetes.io/storage-provisioner")
+	// Remove clone-related annotations so CDI does not skip host-assisted cloning
+	delete(annotations, "k8s.io/CloneRequest")
+	delete(annotations, "k8s.io/CloneOf")
 	// Remove any cdi related annotations from the PVC
 	for k := range annotations {
 		if strings.HasPrefix(k, "cdi.kubevirt.io") || strings.HasPrefix(k, "volume.kubernetes.io/selected-node") {
