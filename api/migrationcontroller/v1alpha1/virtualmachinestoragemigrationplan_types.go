@@ -133,6 +133,8 @@ type VirtualMachineStorageMigrationPlanStatus struct {
 
 	// The suffix to automatically append to the source PVC name. If the target name is not provided. This will replace the suffix "-new" or "-mig-xxxx" if present on the source PVC name.
 	Suffix *string `json:"suffix,omitempty"`
+	// RefreshEndTime is the time the plan controller last completed a refresh reconcile.
+	RefreshEndTime *metav1.MicroTime `json:"refreshEndTime,omitempty"`
 	// The conditions of the migration plan.
 	Conditions `json:",inline"`
 }
