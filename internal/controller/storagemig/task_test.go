@@ -348,6 +348,59 @@ var _ = Describe("StorageMigration tasks", func() {
 		})
 	})
 
+	Context("when the phase is WaitForLiveMigrationToComplete for offline migration", func() {
+		BeforeEach(func() {
+			createValidPlanAndMigration(migrations.WaitForLiveMigrationToComplete, ptr.To(migrations.RetentionPolicyKeepSource))
+			createPVCs()
+			createVM()
+			// No VMI — offline path
+		})
+
+		It("should update RunningMigrations Progress from target DataVolume status", func() {
+			plan := &migrations.VirtualMachineStorageMigrationPlan{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testutils.TestMigPlanName, Namespace: testutils.TestNamespace}, plan)).To(Succeed())
+			plan.Status = *createReadyStorageMigrationPlanStatus(plan)
+			Expect(k8sClient.Status().Update(ctx, plan)).To(Succeed())
+
+			dv := &cdiv1.DataVolume{
+				ObjectMeta: metav1.ObjectMeta{Name: testutils.TestTargetPVCName, Namespace: testutils.TestNamespace},
+				Spec: cdiv1.DataVolumeSpec{
+					Source: &cdiv1.DataVolumeSource{Blank: &cdiv1.DataVolumeBlankImage{}},
+					Storage: &cdiv1.StorageSpec{
+						Resources: corev1.VolumeResourceRequirements{
+							Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, dv)).To(Succeed())
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testutils.TestTargetPVCName, Namespace: testutils.TestNamespace}, dv)).To(Succeed())
+			dv.Status.Phase = cdiv1.CloneInProgress
+			dv.Status.Progress = "48.12%"
+			Expect(k8sClient.Status().Update(ctx, dv)).To(Succeed())
+
+			migration := &migrations.VirtualMachineStorageMigration{}
+			Expect(controllerReconciler.Client.Get(ctx, typeNamespacedName, migration)).To(Succeed())
+			migration.Status.RunningMigrations = []migrations.RunningVirtualMachineMigration{
+				{Name: testutils.TestVMName},
+			}
+			Expect(k8sClient.Status().Update(ctx, migration)).To(Succeed())
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(controllerReconciler.Client.Get(ctx, typeNamespacedName, migration)).To(Succeed())
+			Expect(migration.Status.Phase).To(Equal(migrations.WaitForLiveMigrationToComplete))
+			Expect(migration.Status.RunningMigrations).To(ContainElement(migrations.RunningVirtualMachineMigration{
+				Name:     testutils.TestVMName,
+				Progress: "48.12",
+			}))
+			Expect(migration.Status.CompletedMigrations).To(BeEmpty())
+		})
+	})
+
 	Context("when the phase is CleanupMigrationResources", func() {
 		BeforeEach(func() {
 			createPVCs()
