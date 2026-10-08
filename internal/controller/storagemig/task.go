@@ -288,9 +288,27 @@ func (t *Task) handleCancelingPhase(ctx context.Context) error {
 		if !vmiExists {
 			// Offline: revert VM volumes and mark as cancelled; DVs are deleted in CleanupCancelledMigrations.
 			t.Log.V(4).Info("Cancelling offline migration", "vm", vm.Name)
-			if err := t.cancelLiveMigration(ctx, vm.Name); err != nil {
+			unchanged, err := t.vmUnchangedByPlanMigration(ctx, vm.Name)
+			if err != nil {
 				return err
 			}
+			if !unchanged {
+				if err := t.cancelLiveMigration(ctx, vm.Name); err != nil {
+					return err
+				}
+			} else {
+				t.Log.V(4).Info("Cancelling offline migration without volume revert; VM unchanged by this plan", "vm", vm.Name)
+			}
+			cancelledMigrations = append(cancelledMigrations, vm.Name)
+			continue
+		}
+
+		unchanged, err := t.vmUnchangedByPlanMigration(ctx, vm.Name)
+		if err != nil {
+			return err
+		}
+		if unchanged {
+			t.Log.V(4).Info("Migration cancelled without volume revert; VM unchanged by this plan", "vm", vm.Name)
 			cancelledMigrations = append(cancelledMigrations, vm.Name)
 			continue
 		}

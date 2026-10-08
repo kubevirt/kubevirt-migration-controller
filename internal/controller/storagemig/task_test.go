@@ -985,6 +985,54 @@ var _ = Describe("StorageMigration tasks", func() {
 		Entry("false when SourcePVCs corrupted to target but volumes on target", "target-pvc", "target-pvc", false),
 	)
 
+	DescribeTable("vmUnchangedByPlanMigration",
+		func(volumeClaim string, expectUnchanged bool) {
+			ctx := context.Background()
+			vmName := "unchanged-" + volumeClaim
+			if len(vmName) > 63 {
+				vmName = vmName[:63]
+			}
+			vm := testutils.NewVirtualMachine(vmName, testutils.TestNamespace, "disk0", volumeClaim)
+			Expect(k8sClient.Create(ctx, vm)).To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Delete(ctx, vm)
+			})
+
+			task := &Task{
+				Client: k8sClient,
+				Log:    logf.Log.WithName("test"),
+				Owner: &migrations.VirtualMachineStorageMigration{
+					ObjectMeta: metav1.ObjectMeta{Namespace: testutils.TestNamespace},
+				},
+				Plan: &migrations.VirtualMachineStorageMigrationPlan{
+					Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+						InProgressMigrations: []migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{{
+							VirtualMachineStorageMigrationPlanVirtualMachine: migrations.VirtualMachineStorageMigrationPlanVirtualMachine{
+								Name: vmName,
+								TargetMigrationPVCs: []migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC{{
+									VolumeName: "disk0",
+									DestinationPVC: migrations.VirtualMachineStorageMigrationPlanDestinationPVC{
+										Name: ptr.To("target-pvc"),
+									},
+								}},
+							},
+							SourcePVCs: []migrations.VirtualMachineStorageMigrationPlanSourcePVC{{
+								VolumeName: "disk0",
+								Name:       "source-pvc",
+							}},
+						}},
+					},
+				},
+			}
+			unchanged, err := task.vmUnchangedByPlanMigration(ctx, vmName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(unchanged).To(Equal(expectUnchanged))
+		},
+		Entry("true when VM still on PVC from a prior migration", "prior-target-pvc", true),
+		Entry("false when VM on this plan's target", "target-pvc", false),
+		Entry("false when VM on this plan's recorded source", "source-pvc", false),
+	)
+
 	It("recoverCorruptedSourcePVCs restores originals from VolumeUpdateState", func() {
 		task := &Task{Log: logf.Log.WithName("test")}
 		planVM := &migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine{
