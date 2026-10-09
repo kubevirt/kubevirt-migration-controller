@@ -856,6 +856,8 @@ var _ = Describe("StorageMigration target DV annotations", func() {
 					"pv.kubernetes.io/bound-by-controller":          "true",
 					"volume.kubernetes.io/storage-provisioner":      "provisioner-name",
 					"cdi.kubevirt.io/pruned-annotation":             "true",
+					"k8s.io/CloneRequest":                           "default/source",
+					"k8s.io/CloneOf":                                "true",
 				},
 				OwnerReferences: []metav1.OwnerReference{
 					{
@@ -909,6 +911,8 @@ var _ = Describe("StorageMigration target DV annotations", func() {
 		Expect(targetDV.Annotations).ToNot(HaveKey("pv.kubernetes.io/bound-by-controller"))
 		Expect(targetDV.Annotations).ToNot(HaveKey("volume.kubernetes.io/storage-provisioner"))
 		Expect(targetDV.Annotations).ToNot(HaveKey("cdi.kubevirt.io/pruned-annotation"))
+		Expect(targetDV.Annotations).ToNot(HaveKey("k8s.io/CloneRequest"))
+		Expect(targetDV.Annotations).ToNot(HaveKey("k8s.io/CloneOf"))
 	})
 })
 
