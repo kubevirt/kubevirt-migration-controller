@@ -80,6 +80,10 @@ func (t *Task) offlineMigrateVM(ctx context.Context, planVM migrations.VirtualMa
 			return err
 		}
 	}
+	// Also migrate the VMState PVC, which nothing moves on the offline path. See backendstorage_offline.go.
+	if err := t.startOfflineBackendStorageMigration(ctx, vm, &planVM); err != nil {
+		return err
+	}
 	return nil
 }
 
