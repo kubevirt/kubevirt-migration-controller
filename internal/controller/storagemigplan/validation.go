@@ -52,6 +52,7 @@ const (
 	StorageMigrationNotPossibleType              = "StorageMigrationNotPossible"
 	InvalidPVCsType                              = "InvalidPVCs"
 	FilesystemPVCsWithoutKubeVirtContentTypeType = "FilesystemPVCsWithoutKubeVirtContentType"
+	BackendStoragePVCNotMigratedType             = "BackendStoragePVCNotMigrated"
 )
 
 // Annotation keys and values for PVC content type (CDI/KubeVirt)
@@ -216,6 +217,10 @@ func (r *StorageMigPlanReconciler) validateStorageMigrationPossible(ctx context.
 		})
 	} else {
 		plan.Status.DeleteCondition(FilesystemPVCsWithoutKubeVirtContentTypeType)
+	}
+	// TODO (kubevirt v1.10): mostly unneeded once declarative vmstate handles the migration directly.
+	if err := r.applyBackendStorageWarning(ctx, plan); err != nil {
+		return err
 	}
 	if len(plan.Status.ReadyMigrations) > 0 {
 		// Remove the storage migration not possible condition for the virtual machine.
@@ -480,6 +485,123 @@ func (r *StorageMigPlanReconciler) getFilesystemPVCsWithoutKubeVirtContentType(c
 		}
 	}
 	return offending, nil
+}
+
+// applyBackendStorageWarning sets or clears the BackendStoragePVCNotMigrated warning condition.
+func (r *StorageMigPlanReconciler) applyBackendStorageWarning(ctx context.Context, plan *migrations.VirtualMachineStorageMigrationPlan) error {
+	backendWarnings, err := r.getBackendStorageWarnings(ctx, plan,
+		plan.Status.ReadyMigrations,
+		plan.Status.InProgressMigrations,
+	)
+	if err != nil {
+		return fmt.Errorf("checking backend-storage (VMState) PVCs: %w", err)
+	}
+	if len(backendWarnings) == 0 {
+		plan.Status.DeleteCondition(BackendStoragePVCNotMigratedType)
+		return nil
+	}
+	msg := strings.Join(backendWarnings, " ")
+	if len(backendWarnings) > 5 {
+		msg = fmt.Sprintf("%s (and %d more VMs with persistent VM state)",
+			strings.Join(backendWarnings[:5], " "), len(backendWarnings)-5)
+	}
+	plan.Status.SetCondition(migrations.Condition{
+		Type:     BackendStoragePVCNotMigratedType,
+		Status:   corev1.ConditionTrue,
+		Reason:   migrations.Advisory,
+		Category: migrations.Warn,
+		Message:  msg,
+	})
+	return nil
+}
+
+// getBackendStorageWarnings returns a message per VM whose VMState PVC can't be migrated automatically,
+// so the plan doesn't report success while leaving a VM partially migrated. It warns only for the cases
+// we can't handle: a running VM whose vmStateStorageClass doesn't match the target, or a stopped VM
+// whose disks target more than one storage class. Clean cases (and the stopped single-SC case the
+// storagemig controller handles itself) produce no warning.
+func (r *StorageMigPlanReconciler) getBackendStorageWarnings(ctx context.Context, plan *migrations.VirtualMachineStorageMigrationPlan, vms ...[]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine) ([]string, error) {
+	vmStateSC, err := componenthelpers.GetVMStateStorageClass(ctx, r.Client)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{})
+	var warnings []string
+	for _, list := range vms {
+		for _, statusVM := range list {
+			if _, ok := seen[statusVM.Name]; ok {
+				continue
+			}
+			seen[statusVM.Name] = struct{}{}
+
+			vm, err := componenthelpers.GetVirtualMachineFromName(ctx, r.Client, statusVM.Name, plan.Namespace)
+			if err != nil {
+				return nil, err
+			}
+			if vm == nil || !componenthelpers.VMNeedsBackendStorage(vm) {
+				continue
+			}
+			running, err := componenthelpers.IsVMRunning(ctx, r.Client, statusVM.Name, plan.Namespace)
+			if err != nil {
+				return nil, err
+			}
+			// Running VM: the live handoff already lands it on vmStateStorageClass == target. No warning.
+			if running && vmStateSC != "" && targetsMatchStorageClass(statusVM, vmStateSC) {
+				continue
+			}
+			// Stopped VM: the storagemig controller migrates it itself when there's a single target SC.
+			if !running {
+				statusVMCopy := statusVM
+				if _, ok := componenthelpers.SingleTargetStorageClass(&statusVMCopy); ok {
+					continue
+				}
+			}
+			warning, err := r.backendStorageWarning(ctx, statusVM.Name, plan.Namespace, running, vmStateSC)
+			if err != nil {
+				return nil, err
+			}
+			warnings = append(warnings, warning)
+		}
+	}
+	return warnings, nil
+}
+
+// targetsMatchStorageClass reports whether the VM has targets and all of them use sc.
+func targetsMatchStorageClass(statusVM migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, sc string) bool {
+	if len(statusVM.TargetMigrationPVCs) == 0 {
+		return false
+	}
+	for _, pvc := range statusVM.TargetMigrationPVCs {
+		if pvc.DestinationPVC.StorageClassName == nil || *pvc.DestinationPVC.StorageClassName != sc {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *StorageMigPlanReconciler) backendStorageWarning(ctx context.Context, vmName, namespace string, running bool, vmStateSC string) (string, error) {
+	pvcDesc := fmt.Sprintf("%q", componenthelpers.BackendStoragePVCLabel+"-"+vmName)
+	pvc, err := componenthelpers.GetBackendStoragePVC(ctx, r.Client, vmName, namespace)
+	if err != nil {
+		return "", err
+	}
+	if pvc != nil {
+		sc := "(default)"
+		if pvc.Spec.StorageClassName != nil && *pvc.Spec.StorageClassName != "" {
+			sc = fmt.Sprintf("%q", *pvc.Spec.StorageClassName)
+		}
+		pvcDesc = fmt.Sprintf("%q (StorageClass %s)", pvc.Name, sc)
+	}
+	if running {
+		vmStateSCDesc := "unset"
+		if vmStateSC != "" {
+			vmStateSCDesc = fmt.Sprintf("%q", vmStateSC)
+		}
+		return fmt.Sprintf("VM %q uses persistent VM state (vTPM/EFI/CBT); its backend-storage PVC %s is not part of this plan and will be moved only to the cluster-wide vmStateStorageClass (%s), not the plan's target StorageClass. Set vmStateStorageClass to the desired StorageClass before migrating to avoid leaving VM state on the source StorageClass.",
+			vmName, pvcDesc, vmStateSCDesc), nil
+	}
+	return fmt.Sprintf("VM %q uses persistent VM state (vTPM/EFI/CBT); its backend-storage PVC %s cannot be migrated automatically because the VM's volumes target more than one StorageClass, so there is no single destination for the VMState PVC. It will remain on its current StorageClass. Migrate the VM's volumes to a single StorageClass to let the VMState PVC be migrated too.",
+		vmName, pvcDesc), nil
 }
 
 func (r *StorageMigPlanReconciler) validatePVCs(ctx context.Context, plan *migrations.VirtualMachineStorageMigrationPlan) (string, string, error) {
