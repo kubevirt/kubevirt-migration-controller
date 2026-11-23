@@ -66,12 +66,24 @@ var (
 		return m
 	}()
 
+	// ref: https://www.iana.org/assignments/tls-parameters/tls-parameters.xml#tls-parameters-8
+	groupNameToCurveID = map[string]tls.CurveID{
+		migrationsv1alpha1.TLSGroupX25519:             tls.X25519,
+		migrationsv1alpha1.TLSGroupSecP256r1:          tls.CurveP256,
+		migrationsv1alpha1.TLSGroupSecP384r1:          tls.CurveP384,
+		migrationsv1alpha1.TLSGroupSecP521r1:          tls.CurveP521,
+		migrationsv1alpha1.TLSGroupX25519MLKEM768:     tls.X25519MLKEM768,
+		migrationsv1alpha1.TLSGroupSecP256r1MLKEM768:  tls.SecP256r1MLKEM768,
+		migrationsv1alpha1.TLSGroupSecP384r1MLKEM1024: tls.SecP384r1MLKEM1024,
+	}
+
 	log = ctrl.Log.WithName("managed-tls-watcher")
 )
 
 type cryptoConfig struct {
-	CipherSuites []uint16
-	MinVersion   uint16
+	CipherSuites     []uint16
+	MinVersion       uint16
+	CurvePreferences []tls.CurveID
 }
 
 type ManagedTLSWatcher struct {
@@ -152,8 +164,9 @@ func cryptoConfigFromSpec(profile *migrationsv1alpha1.TLSSecurityProfile) *crypt
 		minTLSVersion = tls.VersionTLS12
 	}
 	return &cryptoConfig{
-		CipherSuites: cipherSuitesIDs(tlsProfileSpec.Ciphers),
-		MinVersion:   minTLSVersion,
+		CipherSuites:     cipherSuitesIDs(tlsProfileSpec.Ciphers),
+		MinVersion:       minTLSVersion,
+		CurvePreferences: groupsToCurves(tlsProfileSpec.Groups),
 	}
 }
 
@@ -175,6 +188,18 @@ func cipherSuitesIDs(names []string) []uint16 {
 	var ids []uint16
 	for _, name := range names {
 		if id, ok := cipherNameToID[name]; ok {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// groupsToCurves translates group names to CurveID which can go straight to the tls.Config
+func groupsToCurves(names []string) []tls.CurveID {
+	ids := make([]tls.CurveID, 0, len(names))
+
+	for _, name := range names {
+		if id, ok := groupNameToCurveID[name]; ok {
 			ids = append(ids, id)
 		}
 	}
