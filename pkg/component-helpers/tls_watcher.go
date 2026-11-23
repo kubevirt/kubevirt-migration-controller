@@ -146,31 +146,30 @@ func (m *ManagedTLSWatcher) GetTLSConfig(ctx context.Context) *cryptoConfig {
 }
 
 func cryptoConfigFromSpec(profile *migrationsv1alpha1.TLSSecurityProfile) *cryptoConfig {
-	cipherNames, minTypedTLSVersion := selectCipherSuitesAndMinTLSVersion(profile)
-	minTLSVersion, ok := tlsVersionMap[string(minTypedTLSVersion)]
+	tlsProfileSpec := getTLSProfileSpec(profile)
+	minTLSVersion, ok := tlsVersionMap[string(tlsProfileSpec.MinTLSVersion)]
 	if !ok {
-		log.Info("unknown TLS version %q, defaulting to TLS 1.2", minTypedTLSVersion)
+		log.Info("unknown TLS version %q, defaulting to TLS 1.2", tlsProfileSpec.MinTLSVersion)
 		minTLSVersion = tls.VersionTLS12
 	}
 	return &cryptoConfig{
-		CipherSuites: cipherSuitesIDs(cipherNames),
+		CipherSuites: cipherSuitesIDs(tlsProfileSpec.Ciphers),
 		MinVersion:   minTLSVersion,
 	}
 }
 
-func selectCipherSuitesAndMinTLSVersion(
-	profile *migrationsv1alpha1.TLSSecurityProfile,
-) ([]string, migrationsv1alpha1.TLSProtocolVersion) {
+func getTLSProfileSpec(profile *migrationsv1alpha1.TLSSecurityProfile) migrationsv1alpha1.TLSProfileSpec {
 	if profile == nil {
-		profile = &migrationsv1alpha1.TLSSecurityProfile{
-			Type:         migrationsv1alpha1.TLSProfileIntermediateType,
-			Intermediate: &migrationsv1alpha1.IntermediateTLSProfile{},
-		}
+		return *migrationsv1alpha1.TLSProfiles[migrationsv1alpha1.TLSProfileIntermediateType]
 	}
 	if profile.Custom != nil {
-		return profile.Custom.TLSProfileSpec.Ciphers, profile.Custom.TLSProfileSpec.MinTLSVersion
+		return profile.Custom.TLSProfileSpec
 	}
-	return migrationsv1alpha1.TLSProfiles[profile.Type].Ciphers, migrationsv1alpha1.TLSProfiles[profile.Type].MinTLSVersion
+	if spec, ok := migrationsv1alpha1.TLSProfiles[profile.Type]; ok {
+		return *spec
+	}
+	log.V(1).Info("invalid TLS security profile, falling back to Intermediate", "type", profile.Type)
+	return *migrationsv1alpha1.TLSProfiles[migrationsv1alpha1.TLSProfileIntermediateType]
 }
 
 func cipherSuitesIDs(names []string) []uint16 {
