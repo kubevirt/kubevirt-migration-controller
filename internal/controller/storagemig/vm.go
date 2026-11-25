@@ -63,10 +63,27 @@ func (t *Task) offlineMigrateVM(ctx context.Context, planVM migrations.VirtualMa
 	}
 
 	t.Log.V(3).Info("Updating VM for offline storage migration", "vm", vm.Name)
-	if err := t.updateVMForOfflineStorageMigration(ctx, vm, planVM); err != nil {
+
+	dvtSourceNames := make(map[string]struct{})
+	for _, dvt := range vm.Spec.DataVolumeTemplates {
+		dvtSourceNames[dvt.Name] = struct{}{}
+	}
+
+	dvTemplateCloneSources := make(map[string]string)
+	for i, pvc := range planVM.TargetMigrationPVCs {
+		if _, hasDVT := dvtSourceNames[planVM.SourcePVCs[i].Name]; hasDVT {
+			dvTemplateCloneSources[*pvc.DestinationPVC.Name] = planVM.SourcePVCs[i].Name
+		}
+	}
+
+	if err := t.updateVMForOfflineStorageMigration(ctx, vm, planVM, dvTemplateCloneSources); err != nil {
 		return err
 	}
+
 	for i, pvc := range planVM.TargetMigrationPVCs {
+		if _, hasDVT := dvtSourceNames[planVM.SourcePVCs[i].Name]; hasDVT {
+			continue
+		}
 		apiPVC := &corev1.PersistentVolumeClaim{}
 		if err := t.Client.Get(ctx, types.NamespacedName{Namespace: planVM.SourcePVCs[i].Namespace, Name: planVM.SourcePVCs[i].Name}, apiPVC); err != nil {
 			return err
@@ -76,8 +93,11 @@ func (t *Task) offlineMigrateVM(ctx context.Context, planVM migrations.VirtualMa
 			return err
 		}
 		pvcObjectMeta := apiPVC.ObjectMeta
-		if err := t.createTargetDV(ctx, pvc, size, pvcObjectMeta.Labels, pvcObjectMeta.Annotations, ptr.To(planVM.SourcePVCs[i].Name)); err != nil {
-			return err
+		dv := t.createTargetDV(pvc, size, pvcObjectMeta.Labels, pvcObjectMeta.Annotations, ptr.To(planVM.SourcePVCs[i].Name))
+		if err := t.Client.Create(ctx, dv); err != nil {
+			if !k8serrors.IsAlreadyExists(err) {
+				return err
+			}
 		}
 	}
 	return nil
@@ -108,8 +128,11 @@ func (t *Task) liveMigrateVM(ctx context.Context, planVM migrations.VirtualMachi
 			return err
 		} else {
 			pvcObjectMeta := apiPVC.ObjectMeta
-			if err := t.createTargetDV(ctx, pvc, size, pvcObjectMeta.Labels, pvcObjectMeta.Annotations, nil); err != nil {
-				return err
+			dv := t.createTargetDV(pvc, size, pvcObjectMeta.Labels, pvcObjectMeta.Annotations, nil)
+			if err := t.Client.Create(ctx, dv); err != nil {
+				if !k8serrors.IsAlreadyExists(err) {
+					return err
+				}
 			}
 		}
 	}
@@ -152,9 +175,9 @@ func (t *Task) determineDataVolumeSize(ctx context.Context, sourcePVC *corev1.Pe
 	return sourcePVC.Spec.Resources.Requests[corev1.ResourceStorage], nil
 }
 
-// createTargetDV creates a DataVolume for the target PVC. If sourcePVCName is nil or empty, the DV source is blank;
+// createTargetDV builds a DataVolume for the target PVC. If sourcePVCName is nil or empty, the DV source is blank;
 // otherwise it clones from the named PVC in the owner namespace (for offline migration).
-func (t *Task) createTargetDV(ctx context.Context, pvc migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC, size resource.Quantity, labels, annotations map[string]string, sourcePVCName *string) error {
+func (t *Task) createTargetDV(pvc migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC, size resource.Quantity, labels, annotations map[string]string, sourcePVCName *string) *cdiv1.DataVolume {
 	targetPvc := pvc.DestinationPVC
 
 	cleanTargetAnnotations(annotations)
@@ -214,13 +237,7 @@ func (t *Task) createTargetDV(ctx context.Context, pvc migrations.VirtualMachine
 	dv.Labels[migrations.VirtualMachineStorageMigrationUIDLabel] = string(t.Owner.UID)
 	dv.Labels[migrations.VirtualMachineStorageMigrationPlanLabel] = naming.GetName(t.Plan.Name, "mig", kvalidation.DNS1035LabelMaxLength)
 	dv.Labels[migrations.VirtualMachineStorageMigrationPlanUIDLabel] = string(t.Plan.UID)
-	if err := t.Client.Create(ctx, dv); err != nil {
-		if k8serrors.IsAlreadyExists(err) {
-			return nil
-		}
-		return err
-	}
-	return nil
+	return dv
 }
 
 // prepareVMForStorageMigration returns a deep copy of the VM with volume and DataVolumeTemplate
@@ -305,12 +322,67 @@ func (t *Task) updateVMForStorageMigration(ctx context.Context, vm *virtv1.Virtu
 	return t.patchVMIfChanged(ctx, vm, vmCopy)
 }
 
-// updateVMForOfflineStorageMigration updates the VM to use the target clone DVs without setting UpdateVolumesStrategy.
-// This prevents the VM from starting until the clone DVs reach Succeeded.
-func (t *Task) updateVMForOfflineStorageMigration(ctx context.Context, vm *virtv1.VirtualMachine, planVM migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine) error {
+// updateVMForOfflineStorageMigration updates the VM to use the target clone DVs without setting
+// UpdateVolumesStrategy. When dvTemplateCloneSources is non-nil, matching DataVolumeTemplates
+// have their source changed to a PVC clone so KubeVirt creates the correct DataVolumes.
+func (t *Task) updateVMForOfflineStorageMigration(ctx context.Context, vm *virtv1.VirtualMachine, planVM migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, dvTemplateCloneSources map[string]string) error {
 	vmCopy, err := t.prepareVMForStorageMigration(vm, planVM)
 	if err != nil {
 		return err
+	}
+
+	targetMigPVCByName := make(map[string]migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC)
+	for _, tp := range planVM.TargetMigrationPVCs {
+		if tp.DestinationPVC.Name != nil {
+			targetMigPVCByName[*tp.DestinationPVC.Name] = tp
+		}
+	}
+
+	for i := range vmCopy.Spec.DataVolumeTemplates {
+		cloneSourcePVC, migrated := dvTemplateCloneSources[vmCopy.Spec.DataVolumeTemplates[i].Name]
+		if !migrated {
+			continue
+		}
+		targetMigPVC, ok := targetMigPVCByName[vmCopy.Spec.DataVolumeTemplates[i].Name]
+		if !ok {
+			continue
+		}
+
+		apiPVC := &corev1.PersistentVolumeClaim{}
+		if err := t.Client.Get(ctx, types.NamespacedName{Namespace: t.Owner.Namespace, Name: cloneSourcePVC}, apiPVC); err != nil {
+			return err
+		}
+		size, err := t.determineSourcePVCSize(ctx, apiPVC)
+		if err != nil {
+			return err
+		}
+
+		targetDV := t.createTargetDV(targetMigPVC, size, apiPVC.Labels, apiPVC.Annotations, ptr.To(cloneSourcePVC))
+
+		dvt := &vmCopy.Spec.DataVolumeTemplates[i]
+		dvt.Spec.Source = targetDV.Spec.Source
+		dvt.Spec.SourceRef = nil
+		if dvt.Spec.Storage != nil {
+			dvt.Spec.Storage.Resources = targetDV.Spec.Storage.Resources
+			dvt.Spec.Storage.VolumeMode = targetDV.Spec.Storage.VolumeMode
+			dvt.Spec.Storage.AccessModes = targetDV.Spec.Storage.AccessModes
+		} else if dvt.Spec.PVC != nil {
+			dvt.Spec.PVC.Resources = targetDV.Spec.Storage.Resources
+			dvt.Spec.PVC.VolumeMode = targetDV.Spec.Storage.VolumeMode
+			dvt.Spec.PVC.AccessModes = targetDV.Spec.Storage.AccessModes
+		}
+		if dvt.Annotations == nil {
+			dvt.Annotations = make(map[string]string)
+		}
+		for k, v := range targetDV.Annotations {
+			dvt.Annotations[k] = v
+		}
+		if dvt.Labels == nil {
+			dvt.Labels = make(map[string]string)
+		}
+		for k, v := range targetDV.Labels {
+			dvt.Labels[k] = v
+		}
 	}
 	return t.patchVMIfChanged(ctx, vm, vmCopy)
 }
