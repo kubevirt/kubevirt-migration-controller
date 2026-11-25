@@ -30,11 +30,15 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	virtv1 "kubevirt.io/api/core/v1"
+	cdiv1 "kubevirt.io/containerized-data-importer-api/pkg/apis/core/v1beta1"
+	migrations "kubevirt.io/kubevirt-migration-controller/api/migrationcontroller/v1alpha1"
 )
 
 const (
@@ -52,6 +56,150 @@ const (
 	migrationDataTotalMetricOld  = "kubevirt_vmi_migration_data_total_bytes"
 	migrationDataTotalMetric     = "kubevirt_vmi_migration_data_bytes_total"
 )
+
+// progressSample is a single volume's progress contribution for size-weighted averaging.
+type progressSample struct {
+	percent float64
+	weight  int64
+}
+
+// getOfflineMigrationProgress returns a size-weighted average of target DataVolume
+// progress percentages for an offline storage migration. Progress is formatted like
+// live migration progress (e.g. "48.12") without a trailing '%'. Returns empty string
+// when no numeric progress is available (N/A or WaitForFirstConsumer). Missing
+// DataVolumes and targets with a nil DestinationPVC name contribute 0%.
+func (t *Task) getOfflineMigrationProgress(ctx context.Context, vmName string) (string, error) {
+	planVM := t.getPlanVMByName(vmName)
+	if planVM == nil || len(planVM.TargetMigrationPVCs) == 0 {
+		return "", nil
+	}
+
+	samples := make([]progressSample, 0, len(planVM.TargetMigrationPVCs))
+
+	for i, targetPVC := range planVM.TargetMigrationPVCs {
+		if targetPVC.DestinationPVC.Name == nil {
+			samples = append(samples, zeroProgressSample(planVM, i))
+			continue
+		}
+
+		dv, err := t.getTargetDataVolume(ctx, *targetPVC.DestinationPVC.Name)
+		if err != nil {
+			return "", err
+		}
+		if dv == nil {
+			samples = append(samples, zeroProgressSample(planVM, i))
+			continue
+		}
+
+		percent, ok := parseDataVolumeProgress(dv)
+		if !ok {
+			continue
+		}
+		weight := planSourcePVCStorageWeight(planVM, i)
+		if dvWeight := dataVolumeRequestedStorageWeight(dv); dvWeight > 0 {
+			weight = dvWeight
+		}
+		samples = append(samples, progressSample{percent: percent, weight: weight})
+	}
+
+	return weightedAverageProgress(samples), nil
+}
+
+// zeroProgressSample is used when a clone has not started yet (nil destination name
+// or target DataVolume not created).
+func zeroProgressSample(planVM *migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, index int) progressSample {
+	return progressSample{percent: 0, weight: planSourcePVCStorageWeight(planVM, index)}
+}
+
+// getTargetDataVolume looks up a target DataVolume by name in the migration namespace.
+// Returns (nil, nil) when the DataVolume does not exist yet.
+func (t *Task) getTargetDataVolume(ctx context.Context, name string) (*cdiv1.DataVolume, error) {
+	dv := &cdiv1.DataVolume{}
+	err := t.Client.Get(ctx, types.NamespacedName{Namespace: t.Owner.Namespace, Name: name}, dv)
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return dv, nil
+}
+
+// weightedAverageProgress returns a size-weighted average of progress samples,
+// formatted like live migration progress (e.g. "48.12"). Returns empty string
+// when there are no samples.
+func weightedAverageProgress(samples []progressSample) string {
+	if len(samples) == 0 {
+		return ""
+	}
+	var totalWeight int64
+	var weightedSum float64
+	for _, s := range samples {
+		w := s.weight
+		if w <= 0 {
+			w = 1
+		}
+		totalWeight += w
+		weightedSum += s.percent * float64(w)
+	}
+	return strconv.FormatFloat(weightedSum/float64(totalWeight), 'f', 2, 64)
+}
+
+// parseDataVolumeProgress extracts a percentage from a DataVolume.
+// Succeeded is 100. WaitForFirstConsumer and N/A/empty/unparseable are unavailable (ok=false).
+func parseDataVolumeProgress(dv *cdiv1.DataVolume) (percent float64, ok bool) {
+	if dv.Status.Phase == cdiv1.Succeeded {
+		return 100, true
+	}
+	if dv.Status.Phase == cdiv1.WaitForFirstConsumer {
+		return 0, false
+	}
+	progress := strings.TrimSpace(string(dv.Status.Progress))
+	if progress == "" || strings.EqualFold(progress, "N/A") {
+		return 0, false
+	}
+	progress = strings.TrimSuffix(progress, "%")
+	value, err := strconv.ParseFloat(progress, 64)
+	if err != nil {
+		return 0, false
+	}
+	return value, true
+}
+
+func planSourcePVCStorageWeight(planVM *migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, index int) int64 {
+	if planVM == nil || index < 0 || index >= len(planVM.SourcePVCs) {
+		return 1
+	}
+	if q, ok := planVM.SourcePVCs[index].SourcePVC.Spec.Resources.Requests[corev1.ResourceStorage]; ok {
+		if v := q.Value(); v > 0 {
+			return v
+		}
+	}
+	return 1
+}
+
+func dataVolumeRequestedStorageWeight(dv *cdiv1.DataVolume) int64 {
+	if q := dataVolumeRequestedStorage(dv); q != nil {
+		if v := q.Value(); v > 0 {
+			return v
+		}
+	}
+	return 0
+}
+
+func dataVolumeRequestedStorage(dv *cdiv1.DataVolume) *resource.Quantity {
+	if dv.Spec.Storage != nil {
+		if q, ok := dv.Spec.Storage.Resources.Requests[corev1.ResourceStorage]; ok {
+			return &q
+		}
+	}
+	if dv.Spec.PVC != nil {
+		if q, ok := dv.Spec.PVC.Resources.Requests[corev1.ResourceStorage]; ok {
+			return &q
+		}
+	}
+	return nil
+}
 
 func (t *Task) getLastObservedProgressPercent(ctx context.Context, vmName, namespace string) (string, error) {
 	t.Log.Info("getLastObservedProgressPercent", "vmName", vmName, "namespace", namespace)
