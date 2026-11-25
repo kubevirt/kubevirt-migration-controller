@@ -16,7 +16,9 @@ rules:
   - persistentvolumeclaims
   verbs:
   - delete
+  - get
   - list
+  - patch
   - update
   - watch
 - apiGroups:

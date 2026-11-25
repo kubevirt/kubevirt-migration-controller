@@ -80,6 +80,10 @@ func (t *Task) offlineMigrateVM(ctx context.Context, planVM migrations.VirtualMa
 			return err
 		}
 	}
+	// Also migrate the VMState PVC, which nothing moves on the offline path. See backendstorage_offline.go.
+	if err := t.startOfflineBackendStorageMigration(ctx, vm, &planVM); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -367,7 +371,8 @@ func (t *Task) refreshCompletedVirtualMachines(ctx context.Context) (bool, error
 	return false, nil
 }
 
-// isOfflineMigrationCompleted returns true when all target DataVolumes for the VM have phase Succeeded or WaitForFirstConsumer.
+// isOfflineMigrationCompleted returns true when all target DataVolumes for the VM are populated, or
+// deferred to first consumer (WaitForFirstConsumer/PendingPopulation) on WaitForFirstConsumer storage.
 func (t *Task) isOfflineMigrationCompleted(ctx context.Context, vmName string) (bool, error) {
 	planVM := t.getPlanVMByName(vmName)
 	if planVM == nil {
@@ -381,7 +386,9 @@ func (t *Task) isOfflineMigrationCompleted(ctx context.Context, vmName string) (
 			}
 			return false, err
 		}
-		if dv.Status.Phase != cdiv1.Succeeded && dv.Status.Phase != cdiv1.WaitForFirstConsumer {
+		switch dv.Status.Phase {
+		case cdiv1.Succeeded, cdiv1.WaitForFirstConsumer, cdiv1.PendingPopulation:
+		default:
 			return false, nil
 		}
 	}

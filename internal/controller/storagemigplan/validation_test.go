@@ -649,6 +649,147 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				Expect(updated.Status.ReadyMigrations).To(HaveLen(1))
 				Expect(updated.Status.Conditions.List).NotTo(ContainElement(HaveField("Type", FilesystemPVCsWithoutKubeVirtContentTypeType)))
 			})
+
+			It("does not warn for a stopped vTPM VM with a single target StorageClass (the controller migrates its VMState PVC offline)", func() {
+				By("creating a stopped VM with a persistent vTPM and its source PVC")
+				vm := testutils.NewVirtualMachine(testVMName, testutils.TestNamespace, testVolumeName, originalPVCName)
+				vm.Spec.Template.Spec.Domain.Devices.TPM = &virtv1.TPMDevice{Persistent: ptr.To(true)}
+				Expect(reconciler.Client.Create(ctx, vm)).To(Succeed())
+				pvc := testutils.NewPersistentVolumeClaim(originalPVCName, vm.Namespace)
+				Expect(reconciler.Client.Create(ctx, pvc)).To(Succeed())
+				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName, testutils.NewVirtualMachine(testVMName, testutils.TestNamespace, testVolumeName, originalPVCName))
+				Expect(reconciler.Client.Create(ctx, migPlan)).To(Succeed())
+
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				updated := &migrations.VirtualMachineStorageMigrationPlan{}
+				Expect(reconciler.Client.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+				Expect(updated.Status.ReadyMigrations).To(HaveLen(1), "plan should remain ready")
+				Expect(updated.Status.Conditions.List).NotTo(ContainElement(HaveField("Type", BackendStoragePVCNotMigratedType)))
+			})
+
+			It("warns for a stopped vTPM VM whose volumes target multiple StorageClasses (ambiguous VMState destination)", func() {
+				By("creating two target storage classes")
+				Expect(reconciler.Client.Create(ctx, testutils.NewDefaultStorageClass("sc-a"))).To(Succeed())
+				Expect(reconciler.Client.Create(ctx, testutils.NewDefaultStorageClass("sc-b"))).To(Succeed())
+
+				By("creating a stopped vTPM VM with two volumes and two source PVCs")
+				vm := testutils.NewVirtualMachine(testVMName, testutils.TestNamespace, testVolumeName, originalPVCName)
+				vm.Spec.Template.Spec.Domain.Devices.TPM = &virtv1.TPMDevice{Persistent: ptr.To(true)}
+				vm.Spec.Template.Spec.Volumes = append(vm.Spec.Template.Spec.Volumes, virtv1.Volume{
+					Name: "second-volume",
+					VolumeSource: virtv1.VolumeSource{
+						PersistentVolumeClaim: &virtv1.PersistentVolumeClaimVolumeSource{
+							PersistentVolumeClaimVolumeSource: corev1.PersistentVolumeClaimVolumeSource{ClaimName: "second-pvc"},
+						},
+					},
+				})
+				Expect(reconciler.Client.Create(ctx, vm)).To(Succeed())
+				Expect(reconciler.Client.Create(ctx, testutils.NewPersistentVolumeClaim(originalPVCName, vm.Namespace))).To(Succeed())
+				Expect(reconciler.Client.Create(ctx, testutils.NewPersistentVolumeClaim("second-pvc", vm.Namespace))).To(Succeed())
+
+				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName, vm)
+				migPlan.Spec.VirtualMachines[0].TargetMigrationPVCs[0].DestinationPVC.StorageClassName = ptr.To("sc-a")
+				migPlan.Spec.VirtualMachines[0].TargetMigrationPVCs[1].DestinationPVC.Name = ptr.To("second-target")
+				migPlan.Spec.VirtualMachines[0].TargetMigrationPVCs[1].DestinationPVC.StorageClassName = ptr.To("sc-b")
+				Expect(reconciler.Client.Create(ctx, migPlan)).To(Succeed())
+
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				updated := &migrations.VirtualMachineStorageMigrationPlan{}
+				Expect(reconciler.Client.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+				Expect(updated.Status.Conditions.List).To(ContainElement(
+					And(
+						HaveField("Type", BackendStoragePVCNotMigratedType),
+						HaveField("Category", migrations.Warn),
+						HaveField("Status", corev1.ConditionTrue),
+						HaveField("Message", ContainSubstring("more than one StorageClass")),
+					),
+				), "expected backend-storage warning for ambiguous target StorageClasses")
+			})
+
+			It("sets a warning condition when a running VM uses persistent VM state and vmStateStorageClass does not match the target", func() {
+				By("creating a running VM with a persistent vTPM, its VMI, and its source PVC")
+				vm := testutils.NewVirtualMachine(testVMName, testutils.TestNamespace, testVolumeName, originalPVCName)
+				vm.Spec.Template.Spec.Domain.Devices.TPM = &virtv1.TPMDevice{Persistent: ptr.To(true)}
+				Expect(reconciler.Client.Create(ctx, vm)).To(Succeed())
+				pvc := testutils.NewPersistentVolumeClaim(originalPVCName, vm.Namespace)
+				Expect(reconciler.Client.Create(ctx, pvc)).To(Succeed())
+				vmi := testutils.NewVirtualMachineInstance(testVMName, testutils.TestNamespace, "pod-uid", testutils.TestNodeName)
+				vmi.Status.Phase = virtv1.Running
+				Expect(reconciler.Client.Create(ctx, vmi)).To(Succeed())
+				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName, testutils.NewVirtualMachine(testVMName, testutils.TestNamespace, testVolumeName, originalPVCName))
+				Expect(reconciler.Client.Create(ctx, migPlan)).To(Succeed())
+
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				updated := &migrations.VirtualMachineStorageMigrationPlan{}
+				Expect(reconciler.Client.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+				Expect(updated.Status.Conditions.List).To(ContainElement(
+					And(
+						HaveField("Type", BackendStoragePVCNotMigratedType),
+						HaveField("Category", migrations.Warn),
+						HaveField("Status", corev1.ConditionTrue),
+						HaveField("Message", ContainSubstring("vmStateStorageClass")),
+					),
+				), "expected backend-storage warning for a running persistent-vTPM VM with unmatched vmStateStorageClass")
+			})
+
+			It("does not set a warning condition for a VM without persistent VM state", func() {
+				By("creating a VM with no vTPM/EFI and its source PVC")
+				vm := testutils.NewVirtualMachine(testVMName, testutils.TestNamespace, testVolumeName, originalPVCName)
+				Expect(reconciler.Client.Create(ctx, vm)).To(Succeed())
+				pvc := testutils.NewPersistentVolumeClaim(originalPVCName, vm.Namespace)
+				Expect(reconciler.Client.Create(ctx, pvc)).To(Succeed())
+				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName, testutils.NewVirtualMachine(testVMName, testutils.TestNamespace, testVolumeName, originalPVCName))
+				Expect(reconciler.Client.Create(ctx, migPlan)).To(Succeed())
+
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				updated := &migrations.VirtualMachineStorageMigrationPlan{}
+				Expect(reconciler.Client.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+				Expect(updated.Status.ReadyMigrations).To(HaveLen(1))
+				Expect(updated.Status.Conditions.List).NotTo(ContainElement(HaveField("Type", BackendStoragePVCNotMigratedType)))
+			})
+
+			It("does not set a warning condition when a running VM's vmStateStorageClass matches the target StorageClass", func() {
+				By("pointing vmStateStorageClass at the plan's target StorageClass")
+				const matchedSC = "matched-vmstate-sc"
+				matchedStorageClass := testutils.NewDefaultStorageClass(matchedSC)
+				matchedStorageClass.Annotations = nil
+				Expect(reconciler.Client.Create(ctx, matchedStorageClass)).To(Succeed())
+				kv := &virtv1.KubeVirt{}
+				Expect(reconciler.Client.Get(ctx, types.NamespacedName{Name: "kv", Namespace: kvNamespace}, kv)).To(Succeed())
+				kv.Spec.Configuration.VMStateStorageClass = matchedSC
+				Expect(reconciler.Client.Update(ctx, kv)).To(Succeed())
+
+				By("creating a running VM with a persistent vTPM and its source PVC")
+				vm := testutils.NewVirtualMachine(testVMName, testutils.TestNamespace, testVolumeName, originalPVCName)
+				vm.Spec.Template.Spec.Domain.Devices.TPM = &virtv1.TPMDevice{Persistent: ptr.To(true)}
+				Expect(reconciler.Client.Create(ctx, vm)).To(Succeed())
+				pvc := testutils.NewPersistentVolumeClaim(originalPVCName, vm.Namespace)
+				Expect(reconciler.Client.Create(ctx, pvc)).To(Succeed())
+				vmi := testutils.NewVirtualMachineInstance(testVMName, testutils.TestNamespace, "pod-uid", testutils.TestNodeName)
+				vmi.Status.Phase = virtv1.Running
+				Expect(reconciler.Client.Create(ctx, vmi)).To(Succeed())
+
+				planVM := testutils.NewVirtualMachine(testVMName, testutils.TestNamespace, testVolumeName, originalPVCName)
+				migPlan := testutils.NewVirtualMachineStorageMigrationPlan(resourceName, planVM)
+				migPlan.Spec.VirtualMachines[0].TargetMigrationPVCs[0].DestinationPVC.StorageClassName = ptr.To(matchedSC)
+				Expect(reconciler.Client.Create(ctx, migPlan)).To(Succeed())
+
+				_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+				Expect(err).NotTo(HaveOccurred())
+
+				updated := &migrations.VirtualMachineStorageMigrationPlan{}
+				Expect(reconciler.Client.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+				Expect(updated.Status.ReadyMigrations).To(HaveLen(1))
+				Expect(updated.Status.Conditions.List).NotTo(ContainElement(HaveField("Type", BackendStoragePVCNotMigratedType)))
+			})
 		})
 
 		Context("Source PVC preservation across reconciles", func() {

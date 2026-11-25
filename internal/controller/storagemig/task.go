@@ -162,6 +162,12 @@ func (t *Task) handleCleanupMigrationResourcesPhase(ctx context.Context) error {
 		if err := t.deleteSourceDataVolumesAndPVCs(ctx, t.Owner.Status.CompletedMigrations); err != nil {
 			return err
 		}
+		// Same deleteSource policy for the original VMState PVCs left behind after the swap.
+		for _, vmName := range t.Owner.Status.CompletedMigrations {
+			if err := t.deleteFormerBackendStoragePVC(ctx, vmName); err != nil {
+				return err
+			}
+		}
 	}
 	t.Owner.RemoveFinalizer(migrations.VirtualMachineStorageMigrationFinalizer)
 	t.Owner.Status.Phase = migrations.Completed
@@ -247,6 +253,10 @@ func (t *Task) handleWaitForLiveMigrationToCompletePhase(ctx context.Context) er
 		if offline {
 			t.Log.V(5).Info("Checking if offline migration is completed", "vm", vm.Name)
 			completed, err = t.isOfflineMigrationCompleted(ctx, vm.Name)
+			if err == nil && completed {
+				// Not fully migrated until the VMState PVC has moved too.
+				completed, err = t.reconcileOfflineBackendStorageMigration(ctx, vm.Name)
+			}
 		} else {
 			t.Log.V(5).Info("Checking if live migration is completed", "vm", vm.Name)
 			completed, err = t.isLiveMigrationCompleted(ctx, vm.Name)
@@ -288,6 +298,10 @@ func (t *Task) handleCancelingPhase(ctx context.Context) error {
 		if !vmiExists {
 			// Offline: revert VM volumes and mark as cancelled; DVs are deleted in CleanupCancelledMigrations.
 			t.Log.V(4).Info("Cancelling offline migration", "vm", vm.Name)
+			// Also undo the VMState PVC swap.
+			if err := t.cancelOfflineBackendStorageMigration(ctx, vm.Name); err != nil {
+				return err
+			}
 			if err := t.cancelLiveMigration(ctx, vm.Name); err != nil {
 				return err
 			}
