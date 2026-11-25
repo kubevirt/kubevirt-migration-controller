@@ -802,7 +802,18 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				vm.Spec.Template.Spec.Volumes[1].VolumeSource.PersistentVolumeClaim.ClaimName = targetDataPVC
 				Expect(reconciler.Client.Update(ctx, vm)).To(Succeed())
 
-				By("Second reconcile - simulating plan re-validation after migration completes")
+				By("Creating an in-progress migration so source preservation applies mid-flight")
+				migration := &migrations.VirtualMachineStorageMigration{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-migration", Namespace: testutils.TestNamespace},
+					Spec: migrations.VirtualMachineStorageMigrationSpec{
+						VirtualMachineStorageMigrationPlanRef: &corev1.ObjectReference{Name: "test-plan"},
+					},
+				}
+				Expect(reconciler.Client.Create(ctx, migration)).To(Succeed())
+				migration.Status.Phase = migrations.WaitForLiveMigrationToComplete
+				Expect(reconciler.Client.Status().Update(ctx, migration)).To(Succeed())
+
+				By("Second reconcile - simulating plan re-validation after VM swap during migration")
 				// This is where the bug occurs: plan validation clears status lists, then re-computes source PVCs
 				// Because VM spec now has target PVCs, it incorrectly identifies them as "sources"
 				_, err = reconciler.Reconcile(ctx, reconcile.Request{
@@ -963,6 +974,116 @@ var _ = Describe("StorageMigPlan Controller tests without apiserver", func() {
 				)
 			})
 		})
+	})
+})
+
+var _ = Describe("getSourcePVC", func() {
+	const (
+		vmName         = "remig-vm"
+		volumeName     = "rootdisk"
+		priorTargetPVC = "vm-disk-mig-oldtgt"
+		priorSourcePVC = "vm-disk-mig-oldsrc"
+		planName       = "remig-plan"
+	)
+
+	ctx := context.Background()
+
+	It("keeps the VM's current volume when VolumeUpdateState is from a prior migration", func() {
+		reconciler := &StorageMigPlanReconciler{
+			Client:        reconcilerClient,
+			Scheme:        scheme.Scheme,
+			EventRecorder: record.NewFakeRecorder(10),
+			Log:           logf.Log,
+		}
+		DeferCleanup(func() {
+			testutils.CleanupResources(ctx, reconciler.Client)
+		})
+
+		Expect(reconciler.Client.Create(ctx, testutils.NewPersistentVolumeClaim(priorTargetPVC, testutils.TestNamespace))).To(Succeed())
+
+		vm := testutils.NewVirtualMachine(vmName, testutils.TestNamespace, volumeName, priorTargetPVC)
+		vm.Status.VolumeUpdateState = &virtv1.VolumeUpdateState{
+			VolumeMigrationState: &virtv1.VolumeMigrationState{
+				MigratedVolumes: []virtv1.StorageMigratedVolumeInfo{{
+					SourcePVCInfo:      &virtv1.PersistentVolumeClaimInfo{ClaimName: priorSourcePVC},
+					DestinationPVCInfo: &virtv1.PersistentVolumeClaimInfo{ClaimName: priorTargetPVC},
+				}},
+			},
+		}
+		Expect(reconciler.Client.Create(ctx, vm)).To(Succeed())
+
+		plan := &migrations.VirtualMachineStorageMigrationPlan{
+			ObjectMeta: metav1.ObjectMeta{Name: planName, Namespace: testutils.TestNamespace},
+			Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+				Suffix: ptr.To("newsfx"),
+			},
+		}
+		migration := &migrations.VirtualMachineStorageMigration{
+			ObjectMeta: metav1.ObjectMeta{Name: "remig-migration", Namespace: testutils.TestNamespace},
+			Spec: migrations.VirtualMachineStorageMigrationSpec{
+				VirtualMachineStorageMigrationPlanRef: &corev1.ObjectReference{
+					Name: planName,
+				},
+			},
+		}
+		Expect(reconciler.Client.Create(ctx, migration)).To(Succeed())
+		migration.Status.Phase = migrations.Canceling
+		Expect(reconciler.Client.Status().Update(ctx, migration)).To(Succeed())
+
+		pvc, err := reconciler.getSourcePVC(ctx, vm, volumeName, plan)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(pvc).NotTo(BeNil())
+		Expect(pvc.Name).To(Equal(priorTargetPVC))
+	})
+
+	It("walks back through VolumeUpdateState when the VM is on this plan's target", func() {
+		reconciler := &StorageMigPlanReconciler{
+			Client:        reconcilerClient,
+			Scheme:        scheme.Scheme,
+			EventRecorder: record.NewFakeRecorder(10),
+			Log:           logf.Log,
+		}
+		DeferCleanup(func() {
+			testutils.CleanupResources(ctx, reconciler.Client)
+		})
+
+		currentSourcePVC := priorTargetPVC
+		planTargetPVC := "vm-disk-mig-newsfx"
+		Expect(reconciler.Client.Create(ctx, testutils.NewPersistentVolumeClaim(currentSourcePVC, testutils.TestNamespace))).To(Succeed())
+
+		vm := testutils.NewVirtualMachine(vmName, testutils.TestNamespace, volumeName, planTargetPVC)
+		vm.Status.VolumeUpdateState = &virtv1.VolumeUpdateState{
+			VolumeMigrationState: &virtv1.VolumeMigrationState{
+				MigratedVolumes: []virtv1.StorageMigratedVolumeInfo{{
+					SourcePVCInfo:      &virtv1.PersistentVolumeClaimInfo{ClaimName: currentSourcePVC},
+					DestinationPVCInfo: &virtv1.PersistentVolumeClaimInfo{ClaimName: planTargetPVC},
+				}},
+			},
+		}
+		Expect(reconciler.Client.Create(ctx, vm)).To(Succeed())
+
+		plan := &migrations.VirtualMachineStorageMigrationPlan{
+			ObjectMeta: metav1.ObjectMeta{Name: planName, Namespace: testutils.TestNamespace},
+			Status: migrations.VirtualMachineStorageMigrationPlanStatus{
+				Suffix: ptr.To("newsfx"),
+			},
+		}
+		migration := &migrations.VirtualMachineStorageMigration{
+			ObjectMeta: metav1.ObjectMeta{Name: "remig-migration-inflight", Namespace: testutils.TestNamespace},
+			Spec: migrations.VirtualMachineStorageMigrationSpec{
+				VirtualMachineStorageMigrationPlanRef: &corev1.ObjectReference{
+					Name: planName,
+				},
+			},
+		}
+		Expect(reconciler.Client.Create(ctx, migration)).To(Succeed())
+		migration.Status.Phase = migrations.WaitForLiveMigrationToComplete
+		Expect(reconciler.Client.Status().Update(ctx, migration)).To(Succeed())
+
+		pvc, err := reconciler.getSourcePVC(ctx, vm, volumeName, plan)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(pvc).NotTo(BeNil())
+		Expect(pvc.Name).To(Equal(currentSourcePVC))
 	})
 })
 

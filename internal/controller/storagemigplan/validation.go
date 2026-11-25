@@ -111,73 +111,82 @@ func (r *StorageMigPlanReconciler) validateStorageMigrationPossible(ctx context.
 	}
 
 	existingStatusVMMap := r.getExistingStatusVMMap(plan)
-	// Loop over the virtual machines in the plan and validate if the storage migration is possible.
+	r.resetPlanMigrationStatusLists(plan)
+	for _, vm := range plan.Spec.VirtualMachines {
+		if err := r.validateAndAppendPlanVM(ctx, plan, &vm, migrationStatus, existingStatusVMMap); err != nil {
+			return err
+		}
+	}
+	return r.finalizeStorageMigrationValidation(ctx, plan)
+}
+
+func (r *StorageMigPlanReconciler) resetPlanMigrationStatusLists(plan *migrations.VirtualMachineStorageMigrationPlan) {
 	plan.Status.ReadyMigrations = make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, 0)
 	plan.Status.InvalidMigrations = make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, 0)
 	plan.Status.CompletedMigrations = make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, 0)
 	plan.Status.InProgressMigrations = make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, 0)
 	plan.Status.FailedMigrations = make([]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine, 0)
-	for _, vm := range plan.Spec.VirtualMachines {
-		if reason, message, err := componenthelpers.ValidateStorageMigrationPossibleForVM(ctx, r.Client, vm.Name, plan.Namespace); err != nil {
-			return err
-		} else if message != "" || reason != "" {
-			r.Log.V(3).Info("Setting StorageMigrationNotPossible condition", "vm", vm.Name, "reason", reason, "message", message)
-			plan.Status.SetCondition(migrations.Condition{
-				Type:     NotAllVirtualMachinesReadyReason,
-				Status:   corev1.ConditionTrue,
-				Reason:   reason,
-				Category: migrations.Warn,
-				Message:  message,
-			})
-			continue
-		}
+}
 
-		// Always compute status from current VM spec
-		statusVM, err := r.createStatusVM(ctx, &vm, plan)
-		if err != nil {
-			return err
-		}
-		existingStatusVM, hasExisting := existingStatusVMMap[vm.Name]
-		if len(statusVM.SourcePVCs) == 0 {
-			// Transient lookup failures mid-swap must not wipe previously recorded
-			// sources — cancel relies on them to revert volumes.
-			if hasExisting && len(existingStatusVM.SourcePVCs) > 0 {
-				r.Log.V(2).Info("No source PVCs found on current VM lookup; preserving existing plan status", "vm", vm.Name)
-				statusVM = existingStatusVM
-			} else {
-				r.Log.V(2).Info("No source PVCs found for virtual machine", "vm", vm.Name)
-				continue
-			}
-		}
+func (r *StorageMigPlanReconciler) validateAndAppendPlanVM(
+	ctx context.Context,
+	plan *migrations.VirtualMachineStorageMigrationPlan,
+	vm *migrations.VirtualMachineStorageMigrationPlanVirtualMachine,
+	migrationStatus migrationStatus,
+	existingStatusVMMap map[string]migrations.VirtualMachineStorageMigrationPlanStatusVirtualMachine,
+) error {
+	if reason, message, err := componenthelpers.ValidateStorageMigrationPossibleForVM(ctx, r.Client, vm.Name, plan.Namespace); err != nil {
+		return err
+	} else if message != "" || reason != "" {
+		r.Log.V(3).Info("Setting StorageMigrationNotPossible condition", "vm", vm.Name, "reason", reason, "message", message)
+		plan.Status.SetCondition(migrations.Condition{
+			Type:     NotAllVirtualMachinesReadyReason,
+			Status:   corev1.ConditionTrue,
+			Reason:   reason,
+			Category: migrations.Warn,
+			Message:  message,
+		})
+		return nil
+	}
 
-		// Check if we need to preserve original source PVCs after migration swap
+	statusVM, err := r.createStatusVM(ctx, vm, plan)
+	if err != nil {
+		return err
+	}
+	existingStatusVM, hasExisting := existingStatusVMMap[vm.Name]
+	if len(statusVM.SourcePVCs) == 0 {
 		if hasExisting && len(existingStatusVM.SourcePVCs) > 0 {
-			// Detect if the VM spec has been swapped to use target PVCs.
-			// If the newly computed "source" PVCs don't match the originally recorded sources,
-			// then the swap has happened and we should preserve the original sources.
-			swapped := r.hasVMBeenSwapped(existingStatusVM.SourcePVCs, statusVM.SourcePVCs)
-			if swapped {
-				r.Log.V(3).Info("VM has been swapped to target PVCs, preserving original source PVCs", "vm", vm.Name)
-				statusVM.SourcePVCs = existingStatusVM.SourcePVCs
-			}
-		}
-		// If computed "sources" already equal destinations, the originals were lost —
-		// keep any prior sources that still look like real sources.
-		if sourcesMatchTargets(statusVM) && hasExisting && !sourcesMatchTargets(existingStatusVM) {
-			r.Log.V(2).Info("Computed source PVCs match targets; restoring prior source PVCs", "vm", vm.Name)
-			statusVM.SourcePVCs = existingStatusVM.SourcePVCs
-		}
-		// Add the virtual machine to the appropriate list based on the migration status
-		switch migrationStatus {
-		case notStarted:
-			plan.Status.ReadyMigrations = append(plan.Status.ReadyMigrations, statusVM)
-		case inProgress:
-			plan.Status.InProgressMigrations = append(plan.Status.InProgressMigrations, statusVM)
-		case completed:
-			plan.Status.CompletedMigrations = append(plan.Status.CompletedMigrations, statusVM)
+			r.Log.V(2).Info("No source PVCs found on current VM lookup; preserving existing plan status", "vm", vm.Name)
+			statusVM = existingStatusVM
+		} else {
+			r.Log.V(2).Info("No source PVCs found for virtual machine", "vm", vm.Name)
+			return nil
 		}
 	}
-	// Validate the PVCs are valid
+
+	if migrationStatus == inProgress && hasExisting && len(existingStatusVM.SourcePVCs) > 0 {
+		if r.hasVMBeenSwapped(existingStatusVM.SourcePVCs, statusVM.SourcePVCs) {
+			r.Log.V(3).Info("VM has been swapped to target PVCs, preserving original source PVCs", "vm", vm.Name)
+			statusVM.SourcePVCs = existingStatusVM.SourcePVCs
+		}
+	}
+	if migrationStatus == inProgress && sourcesMatchTargets(statusVM) && hasExisting && !sourcesMatchTargets(existingStatusVM) {
+		r.Log.V(2).Info("Computed source PVCs match targets; restoring prior source PVCs", "vm", vm.Name)
+		statusVM.SourcePVCs = existingStatusVM.SourcePVCs
+	}
+
+	switch migrationStatus {
+	case notStarted:
+		plan.Status.ReadyMigrations = append(plan.Status.ReadyMigrations, statusVM)
+	case inProgress:
+		plan.Status.InProgressMigrations = append(plan.Status.InProgressMigrations, statusVM)
+	case completed:
+		plan.Status.CompletedMigrations = append(plan.Status.CompletedMigrations, statusVM)
+	}
+	return nil
+}
+
+func (r *StorageMigPlanReconciler) finalizeStorageMigrationValidation(ctx context.Context, plan *migrations.VirtualMachineStorageMigrationPlan) error {
 	if reason, message, err := r.validatePVCs(ctx, plan); err != nil {
 		return err
 	} else if message != "" {
@@ -189,9 +198,9 @@ func (r *StorageMigPlanReconciler) validateStorageMigrationPossible(ctx context.
 			Message:  message,
 		})
 		return nil
-	} else {
-		plan.Status.DeleteCondition(InvalidPVCsType)
 	}
+	plan.Status.DeleteCondition(InvalidPVCsType)
+
 	offendingPVCs, err := r.getFilesystemPVCsWithoutKubeVirtContentType(ctx,
 		plan.Status.ReadyMigrations,
 		plan.Status.InProgressMigrations,
@@ -218,7 +227,6 @@ func (r *StorageMigPlanReconciler) validateStorageMigrationPossible(ctx context.
 		plan.Status.DeleteCondition(FilesystemPVCsWithoutKubeVirtContentTypeType)
 	}
 	if len(plan.Status.ReadyMigrations) > 0 {
-		// Remove the storage migration not possible condition for the virtual machine.
 		plan.Status.DeleteCondition(StorageMigrationNotPossibleType)
 	}
 	if len(plan.Status.ReadyMigrations) > 0 &&
@@ -376,11 +384,14 @@ func (r *StorageMigPlanReconciler) getSourcePVC(ctx context.Context, vm *virtv1.
 		r.Log.V(2).Info("No source PVC found for volume", "volume", volumeName, "vm", vm.Name)
 		return nil, nil
 	}
-	migrationStatus := r.getMigrationStatus(ctx, plan)
-	if migrationStatus != notStarted {
-		// If the volume is already switched, get the source PVC name from the volume update state.
-		if sourcePVCName := r.getSourcePVCNameFromVolumeUpdateState(vm, pvcName); sourcePVCName != "" {
-			pvcName = sourcePVCName
+	if migrationStatus := r.getMigrationStatus(ctx, plan); migrationStatus == inProgress && plan.Status.Suffix != nil {
+		// Only walk back through VolumeUpdateState when the VM is on this plan's
+		// in-flight target (suffix match). Stale state from a prior completed
+		// migration must not rewrite the source when re-migrating already-moved VMs.
+		if strings.HasSuffix(pvcName, fmt.Sprintf("-mig-%s", *plan.Status.Suffix)) {
+			if sourcePVCName := r.getSourcePVCNameFromVolumeUpdateState(vm, pvcName); sourcePVCName != "" && sourcePVCName != pvcName {
+				pvcName = sourcePVCName
+			}
 		}
 	}
 	r.Log.V(5).Info("source PVC name", "sourcePVCName", pvcName)
