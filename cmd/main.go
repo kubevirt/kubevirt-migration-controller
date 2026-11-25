@@ -139,7 +139,7 @@ func main() {
 				if cc.MinVersion < tls.VersionTLS13 {
 					config.CipherSuites = cc.CipherSuites
 				}
-				config.MinVersion = cc.MinVersion
+				config.CurvePreferences = cc.CurvePreferences
 			}
 			return config, nil
 		}

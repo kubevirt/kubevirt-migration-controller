@@ -20,6 +20,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"maps"
 	"sync"
 
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -58,21 +59,31 @@ var (
 	}
 	cipherNameToID = func() map[string]uint16 {
 		m := make(map[string]uint16, len(cipherSuites)+len(extraCipherSuites))
-		for k, v := range extraCipherSuites {
-			m[k] = v
-		}
+		maps.Copy(m, extraCipherSuites)
 		for _, cs := range cipherSuites {
 			m[cs.Name] = cs.ID
 		}
 		return m
 	}()
 
+	// ref: https://www.iana.org/assignments/tls-parameters/tls-parameters.xml#tls-parameters-8
+	groupNameToCurveID = map[string]tls.CurveID{
+		migrationsv1alpha1.TLSGroupX25519:             tls.X25519,
+		migrationsv1alpha1.TLSGroupSecP256r1:          tls.CurveP256,
+		migrationsv1alpha1.TLSGroupSecP384r1:          tls.CurveP384,
+		migrationsv1alpha1.TLSGroupSecP521r1:          tls.CurveP521,
+		migrationsv1alpha1.TLSGroupX25519MLKEM768:     tls.X25519MLKEM768,
+		migrationsv1alpha1.TLSGroupSecP256r1MLKEM768:  tls.SecP256r1MLKEM768,
+		migrationsv1alpha1.TLSGroupSecP384r1MLKEM1024: tls.SecP384r1MLKEM1024,
+	}
+
 	log = ctrl.Log.WithName("managed-tls-watcher")
 )
 
 type cryptoConfig struct {
-	CipherSuites []uint16
-	MinVersion   uint16
+	CipherSuites     []uint16
+	MinVersion       uint16
+	CurvePreferences []tls.CurveID
 }
 
 type ManagedTLSWatcher struct {
@@ -146,37 +157,49 @@ func (m *ManagedTLSWatcher) GetTLSConfig(ctx context.Context) *cryptoConfig {
 }
 
 func cryptoConfigFromSpec(profile *migrationsv1alpha1.TLSSecurityProfile) *cryptoConfig {
-	cipherNames, minTypedTLSVersion := selectCipherSuitesAndMinTLSVersion(profile)
-	minTLSVersion, ok := tlsVersionMap[string(minTypedTLSVersion)]
+	tlsProfileSpec := getTLSProfileSpec(profile)
+	minTLSVersion, ok := tlsVersionMap[string(tlsProfileSpec.MinTLSVersion)]
 	if !ok {
-		log.Info("unknown TLS version %q, defaulting to TLS 1.2", minTypedTLSVersion)
+		log.Info("unknown TLS version, defaulting to TLS 1.2", "minTLSVersion", tlsProfileSpec.MinTLSVersion)
 		minTLSVersion = tls.VersionTLS12
 	}
 	return &cryptoConfig{
-		CipherSuites: cipherSuitesIDs(cipherNames),
-		MinVersion:   minTLSVersion,
+		CipherSuites:     cipherSuitesIDs(tlsProfileSpec.Ciphers),
+		MinVersion:       minTLSVersion,
+		CurvePreferences: groupsToCurves(tlsProfileSpec.Groups),
 	}
 }
 
-func selectCipherSuitesAndMinTLSVersion(
-	profile *migrationsv1alpha1.TLSSecurityProfile,
-) ([]string, migrationsv1alpha1.TLSProtocolVersion) {
+func getTLSProfileSpec(profile *migrationsv1alpha1.TLSSecurityProfile) migrationsv1alpha1.TLSProfileSpec {
 	if profile == nil {
-		profile = &migrationsv1alpha1.TLSSecurityProfile{
-			Type:         migrationsv1alpha1.TLSProfileIntermediateType,
-			Intermediate: &migrationsv1alpha1.IntermediateTLSProfile{},
-		}
+		return *migrationsv1alpha1.TLSProfiles[migrationsv1alpha1.TLSProfileIntermediateType]
 	}
 	if profile.Custom != nil {
-		return profile.Custom.TLSProfileSpec.Ciphers, profile.Custom.TLSProfileSpec.MinTLSVersion
+		return profile.Custom.TLSProfileSpec
 	}
-	return migrationsv1alpha1.TLSProfiles[profile.Type].Ciphers, migrationsv1alpha1.TLSProfiles[profile.Type].MinTLSVersion
+	if spec, ok := migrationsv1alpha1.TLSProfiles[profile.Type]; ok {
+		return *spec
+	}
+	log.V(1).Info("invalid TLS security profile, falling back to Intermediate", "type", profile.Type)
+	return *migrationsv1alpha1.TLSProfiles[migrationsv1alpha1.TLSProfileIntermediateType]
 }
 
 func cipherSuitesIDs(names []string) []uint16 {
 	var ids []uint16
 	for _, name := range names {
 		if id, ok := cipherNameToID[name]; ok {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// groupsToCurves translates group names to CurveID which can go straight to the tls.Config
+func groupsToCurves(names []string) []tls.CurveID {
+	ids := make([]tls.CurveID, 0, len(names))
+
+	for _, name := range names {
+		if id, ok := groupNameToCurveID[name]; ok {
 			ids = append(ids, id)
 		}
 	}

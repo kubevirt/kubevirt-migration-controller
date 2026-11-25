@@ -1,6 +1,6 @@
 module kubevirt.io/kubevirt-migration-controller
 
-go 1.24.0
+go 1.26.0
 
 require (
 	github.com/go-logr/logr v1.4.3
@@ -18,7 +18,7 @@ require (
 	kubevirt.io/api v1.7.1
 	kubevirt.io/containerized-data-importer-api v1.63.1
 	kubevirt.io/kubevirt v1.7.1
-	kubevirt.io/kubevirt-migration-operator v0.2.0-rc.0.0.20260330115220-abf7dfe8b0a1
+	kubevirt.io/kubevirt-migration-operator v0.4.0-rc.0
 	sigs.k8s.io/controller-runtime v0.20.4
 )
 
