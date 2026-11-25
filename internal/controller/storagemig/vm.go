@@ -76,8 +76,11 @@ func (t *Task) offlineMigrateVM(ctx context.Context, planVM migrations.VirtualMa
 			return err
 		}
 		pvcObjectMeta := apiPVC.ObjectMeta
-		if err := t.createTargetDV(ctx, pvc, size, pvcObjectMeta.Labels, pvcObjectMeta.Annotations, ptr.To(planVM.SourcePVCs[i].Name)); err != nil {
-			return err
+		dv := t.createTargetDV(pvc, size, pvcObjectMeta.Labels, pvcObjectMeta.Annotations, ptr.To(planVM.SourcePVCs[i].Name))
+		if err := t.Client.Create(ctx, dv); err != nil {
+			if !k8serrors.IsAlreadyExists(err) {
+				return err
+			}
 		}
 	}
 	return nil
@@ -108,8 +111,11 @@ func (t *Task) liveMigrateVM(ctx context.Context, planVM migrations.VirtualMachi
 			return err
 		} else {
 			pvcObjectMeta := apiPVC.ObjectMeta
-			if err := t.createTargetDV(ctx, pvc, size, pvcObjectMeta.Labels, pvcObjectMeta.Annotations, nil); err != nil {
-				return err
+			dv := t.createTargetDV(pvc, size, pvcObjectMeta.Labels, pvcObjectMeta.Annotations, nil)
+			if err := t.Client.Create(ctx, dv); err != nil {
+				if !k8serrors.IsAlreadyExists(err) {
+					return err
+				}
 			}
 		}
 	}
@@ -152,9 +158,9 @@ func (t *Task) determineDataVolumeSize(ctx context.Context, sourcePVC *corev1.Pe
 	return sourcePVC.Spec.Resources.Requests[corev1.ResourceStorage], nil
 }
 
-// createTargetDV creates a DataVolume for the target PVC. If sourcePVCName is nil or empty, the DV source is blank;
+// createTargetDV builds a DataVolume for the target PVC. If sourcePVCName is nil or empty, the DV source is blank;
 // otherwise it clones from the named PVC in the owner namespace (for offline migration).
-func (t *Task) createTargetDV(ctx context.Context, pvc migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC, size resource.Quantity, labels, annotations map[string]string, sourcePVCName *string) error {
+func (t *Task) createTargetDV(pvc migrations.VirtualMachineStorageMigrationPlanTargetMigrationPVC, size resource.Quantity, labels, annotations map[string]string, sourcePVCName *string) *cdiv1.DataVolume {
 	targetPvc := pvc.DestinationPVC
 
 	cleanTargetAnnotations(annotations)
@@ -214,13 +220,7 @@ func (t *Task) createTargetDV(ctx context.Context, pvc migrations.VirtualMachine
 	dv.Labels[migrations.VirtualMachineStorageMigrationUIDLabel] = string(t.Owner.UID)
 	dv.Labels[migrations.VirtualMachineStorageMigrationPlanLabel] = naming.GetName(t.Plan.Name, "mig", kvalidation.DNS1035LabelMaxLength)
 	dv.Labels[migrations.VirtualMachineStorageMigrationPlanUIDLabel] = string(t.Plan.UID)
-	if err := t.Client.Create(ctx, dv); err != nil {
-		if k8serrors.IsAlreadyExists(err) {
-			return nil
-		}
-		return err
-	}
-	return nil
+	return dv
 }
 
 // prepareVMForStorageMigration returns a deep copy of the VM with volume and DataVolumeTemplate
