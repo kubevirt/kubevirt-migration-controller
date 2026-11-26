@@ -24,6 +24,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/rand"
@@ -46,7 +47,6 @@ const (
 	vmIndexKey                 = "spec.virtualMachines.name"
 	migrationNameIndexKey      = "spec.virtualMachineStorageMigrationPlanRef.name"
 	RefreshStartTimeAnnotation = "migration.kubevirt.io/refresh-start-time"
-	RefreshEndTimeAnnotation   = "migration.kubevirt.io/refresh-end-time"
 )
 
 // StorageMigPlanReconciler reconciles a VirtualMachineStorageMigrationPlan object
@@ -143,7 +143,7 @@ func (r *StorageMigPlanReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		plan.Status.CompletedOutOf = fmt.Sprintf("%d/%d", len(plan.Status.CompletedMigrations), len(plan.Spec.VirtualMachines))
 
 		if r.shouldUpdateRefresh(plan) {
-			r.setRefreshAnnotations(plan)
+			r.setRefreshEndTime(plan)
 		}
 	}
 
@@ -265,31 +265,25 @@ func compareStorageMigrations(a, b migrations.VirtualMachineStorageMigration) in
 }
 
 func (r *StorageMigPlanReconciler) shouldUpdateRefresh(plan *migrations.VirtualMachineStorageMigrationPlan) bool {
-	if _, ok := plan.Annotations[RefreshStartTimeAnnotation]; !ok {
+	startTimeString, ok := plan.Annotations[RefreshStartTimeAnnotation]
+	if !ok {
 		return false
 	}
-	if _, ok := plan.Annotations[RefreshEndTimeAnnotation]; ok {
-		var startTime time.Time
-		var endTime time.Time
-		var err error
-		if startTime, err = time.Parse(time.RFC3339Nano, plan.Annotations[RefreshStartTimeAnnotation]); err != nil {
+	if plan.Status.RefreshEndTime != nil {
+		startTime, err := time.Parse(metav1.RFC3339Micro, startTimeString)
+		if err != nil {
 			return true
 		}
-		if endTime, err = time.Parse(time.RFC3339Nano, plan.Annotations[RefreshEndTimeAnnotation]); err != nil {
-			return true
-		}
-		if endTime.After(startTime) {
+		if plan.Status.RefreshEndTime.Time.After(startTime) {
 			return false
 		}
 	}
 	return true
 }
 
-func (r *StorageMigPlanReconciler) setRefreshAnnotations(plan *migrations.VirtualMachineStorageMigrationPlan) {
-	if plan.Annotations == nil {
-		plan.Annotations = make(map[string]string)
-	}
-	plan.Annotations[RefreshEndTimeAnnotation] = time.Now().Format(time.RFC3339Nano)
+func (r *StorageMigPlanReconciler) setRefreshEndTime(plan *migrations.VirtualMachineStorageMigrationPlan) {
+	now := metav1.NewMicroTime(time.Now())
+	plan.Status.RefreshEndTime = &now
 }
 
 // SetupWithManager sets up the controller with the Manager.
