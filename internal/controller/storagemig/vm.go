@@ -334,13 +334,10 @@ func (t *Task) refreshReadyVirtualMachines(ctx context.Context) error {
 	if planCopy.Annotations == nil {
 		planCopy.Annotations = make(map[string]string)
 	}
-	planCopy.Annotations[storagemigplan.RefreshStartTimeAnnotation] = time.Now().Format(time.RFC3339Nano)
-	delete(planCopy.Annotations, storagemigplan.RefreshEndTimeAnnotation)
-	t.Log.V(5).Info("new plan annotations", "annotations", planCopy.Annotations)
+	planCopy.Annotations[storagemigplan.RefreshStartTimeAnnotation] = time.Now().Format(metav1.RFC3339Micro)
 	if err := t.Client.Patch(ctx, planCopy, client.MergeFrom(plan)); err != nil {
 		return err
 	}
-	t.Log.V(5).Info("refreshed plan annotations", "annotations", planCopy.Annotations)
 	return nil
 }
 
@@ -354,23 +351,18 @@ func (t *Task) refreshCompletedVirtualMachines(ctx context.Context) (bool, error
 	if startTimeString, ok := plan.Annotations[storagemigplan.RefreshStartTimeAnnotation]; !ok {
 		return false, fmt.Errorf("refresh start time not found")
 	} else {
-		log.V(5).Info("refresh start time", "startTime", startTimeString)
-		if startTime, err = time.Parse(time.RFC3339Nano, startTimeString); err != nil {
+		if startTime, err = time.Parse(metav1.RFC3339Micro, startTimeString); err != nil {
 			return false, err
 		}
 	}
-	if endTime, ok := plan.Annotations[storagemigplan.RefreshEndTimeAnnotation]; ok {
-		log.V(5).Info("refresh end time", "endTime", endTime)
-		if endTime, err := time.Parse(time.RFC3339Nano, endTime); err != nil {
-			return false, err
-		} else {
-			if endTime.After(startTime) {
-				log.V(5).Info("refresh completed", "endTime", endTime, "startTime", startTime)
-				return true, nil
-			} else {
-				log.V(5).Info("refresh not completed", "endTime", endTime, "startTime", startTime)
-			}
+	if plan.Status.RefreshEndTime != nil {
+		endTime := plan.Status.RefreshEndTime.Time
+		if endTime.After(startTime) {
+			return true, nil
 		}
+		log.V(5).Info("refresh not completed", "endTime", endTime, "startTime", startTime)
+	} else {
+		log.V(5).Info("refresh end time not yet set")
 	}
 	return false, nil
 }

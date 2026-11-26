@@ -123,9 +123,11 @@ var _ = Describe("StorageMigration tasks", func() {
 			plan := &migrations.VirtualMachineStorageMigrationPlan{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testutils.TestMigPlanName, Namespace: testutils.TestNamespace}, plan)).To(Succeed())
 			plan.Annotations = map[string]string{}
-			plan.Annotations[storagemigplan.RefreshStartTimeAnnotation] = time.Now().Add(-time.Minute).Format(time.RFC3339Nano)
-			plan.Annotations[storagemigplan.RefreshEndTimeAnnotation] = time.Now().Format(time.RFC3339Nano)
+			plan.Annotations[storagemigplan.RefreshStartTimeAnnotation] = time.Now().Add(-time.Minute).Format(metav1.RFC3339Micro)
 			Expect(k8sClient.Update(ctx, plan)).To(Succeed())
+			now := metav1.NewMicroTime(time.Now())
+			plan.Status.RefreshEndTime = &now
+			Expect(k8sClient.Status().Update(ctx, plan)).To(Succeed())
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
@@ -135,18 +137,21 @@ var _ = Describe("StorageMigration tasks", func() {
 			Expect(migration.Status.Phase).To(Equal(migrations.BeginLiveMigration))
 		})
 
-		DescribeTable("should not start migration when the plan is not refreshed", func(startAnnotation func() string, endAnnotation func() string, expectError bool, nextPhase migrations.Phase) {
+		DescribeTable("should not start migration when the plan is not refreshed", func(startAnnotation func() string, endTime func() *metav1.MicroTime, expectError bool, nextPhase migrations.Phase) {
 			createValidPlanAndMigration(migrations.WaitForStorageMigrationPlanRefreshCompletion, ptr.To(migrations.RetentionPolicyDeleteSource))
 			plan := &migrations.VirtualMachineStorageMigrationPlan{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: testutils.TestMigPlanName, Namespace: testutils.TestNamespace}, plan)).To(Succeed())
 			startAnn := startAnnotation()
-			endAnn := endAnnotation()
 			if startAnn != "" {
 				plan.Annotations = map[string]string{}
 				plan.Annotations[storagemigplan.RefreshStartTimeAnnotation] = startAnn
-				plan.Annotations[storagemigplan.RefreshEndTimeAnnotation] = endAnn
 			}
 			Expect(k8sClient.Update(ctx, plan)).To(Succeed())
+			et := endTime()
+			if et != nil {
+				plan.Status.RefreshEndTime = et
+				Expect(k8sClient.Status().Update(ctx, plan)).To(Succeed())
+			}
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
@@ -161,28 +166,28 @@ var _ = Describe("StorageMigration tasks", func() {
 		},
 			Entry("no refresh start time annotation",
 				func() string { return "" },
-				func() string { return time.Now().Format(time.RFC3339Nano) },
+				func() *metav1.MicroTime { now := metav1.NewMicroTime(time.Now()); return &now },
 				true,
 				migrations.WaitForStorageMigrationPlanRefreshCompletion),
 			Entry("before refresh start time",
-				func() string { return time.Now().Add(-time.Minute).Format(time.RFC3339Nano) },
-				func() string { return time.Now().Format(time.RFC3339Nano) },
+				func() string { return time.Now().Add(-time.Minute).Format(metav1.RFC3339Micro) },
+				func() *metav1.MicroTime { now := metav1.NewMicroTime(time.Now()); return &now },
 				false,
 				migrations.BeginLiveMigration),
-			Entry("before refresh start time, invalid end time",
-				func() string { return time.Now().Add(-time.Minute).Format(time.RFC3339Nano) },
-				func() string { return "not a valid time" },
-				true,
-				migrations.WaitForStorageMigrationPlanRefreshCompletion),
 			Entry("after refresh start time",
-				func() string { return time.Now().Add(time.Minute).Format(time.RFC3339Nano) },
-				func() string { return time.Now().Format(time.RFC3339Nano) },
+				func() string { return time.Now().Add(time.Minute).Format(metav1.RFC3339Micro) },
+				func() *metav1.MicroTime { now := metav1.NewMicroTime(time.Now()); return &now },
 				false,
 				migrations.WaitForStorageMigrationPlanRefreshCompletion),
 			Entry("refresh start time is not a valid time",
 				func() string { return "not a valid time" },
-				func() string { return time.Now().Format(time.RFC3339Nano) },
+				func() *metav1.MicroTime { now := metav1.NewMicroTime(time.Now()); return &now },
 				true,
+				migrations.WaitForStorageMigrationPlanRefreshCompletion),
+			Entry("refresh end time not yet set",
+				func() string { return time.Now().Add(-time.Minute).Format(metav1.RFC3339Micro) },
+				func() *metav1.MicroTime { return nil },
+				false,
 				migrations.WaitForStorageMigrationPlanRefreshCompletion),
 		)
 	})
